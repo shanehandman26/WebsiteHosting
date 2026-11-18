@@ -6,9 +6,18 @@
     <title>Ocean Rush — Jet Ski</title>
     <link rel="stylesheet" href="style.css?v=relay-1">
     <style>
-        body.home-screen { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; padding: 24px; }
+        body.home-screen { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; padding: 24px; background: radial-gradient(ellipse at 50% 35%, #380e50 0%, #260d40 50%, #120c2b 100%); }
         .home-screen main { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
-        .home-logo { display: block; width: min(100%, 760px); max-height: 62svh; object-fit: contain; margin-bottom: 16px; }
+        .home-logo {
+            display: block;
+            width: min(100%, 760px, 94svh);
+            height: auto;
+            margin-bottom: 16px;
+            -webkit-mask-image: linear-gradient(to right, transparent, #000 9%, #000 91%, transparent), linear-gradient(to bottom, transparent, #000 6%, #000 94%, transparent);
+            mask-image: linear-gradient(to right, transparent, #000 9%, #000 91%, transparent), linear-gradient(to bottom, transparent, #000 6%, #000 94%, transparent);
+            -webkit-mask-composite: source-in;
+            mask-composite: intersect;
+        }
         .home-screen button { padding: 16px 32px; font-size: 20px; }
     </style>
     <script type="text/javascript">
