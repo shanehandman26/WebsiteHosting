@@ -3,11 +3,32 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Canvas Game</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Ocean Rush — Jet Ski</title>
+    <link rel="stylesheet" href="style.css?v=relay-1">
+    <style>
+        body.home-screen { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; padding: 24px; }
+        .home-screen main { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
+        .home-logo { display: block; width: min(100%, 760px); max-height: 62svh; object-fit: contain; margin-bottom: 16px; }
+        .home-screen button { padding: 16px 32px; font-size: 20px; }
+    </style>
+    <script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "zcpjnlldtq");
+</script>
 </head>
-<body>
-    <canvas id="gameCanvas" width="600" height="800"></canvas>
-    <script src="scripts/game.js"></script>
+<body class="home-screen">
+    <main>
+        <img class="home-logo" src="assets/ocean-rush-logo.png" alt="Ocean Rush logo featuring a neon jet ski rider and wave">
+        <form action="game.html">
+            <button type="submit">Singleplayer</button>
+        </form>
+        <form action="game.html">
+            <input type="hidden" name="room" value="ocean">
+            <button type="submit">Multiplayer</button>
+        </form>
+    </main>
 </body>
 </html>

@@ -1,0 +1,27 @@
+rules_version = '2';
+// players/{uid}: bestScore (required integer, 0..6), updatedAt (required
+// server timestamp). Ownership is the immutable document ID. No public queries.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+    function isValidScore(data) {
+      return data.keys().hasAll(['bestScore', 'updatedAt'])
+        && data.keys().hasOnly(['bestScore', 'updatedAt'])
+        && data.bestScore is int
+        && data.bestScore >= 0 && data.bestScore <= 6
+        && data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+    match /players/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && isValidScore(request.resource.data);
+      allow update: if isOwner(uid) && isValidScore(request.resource.data)
+        && request.resource.data.bestScore >= resource.data.bestScore;
+      allow delete: if false;
+    }
+  }
+}

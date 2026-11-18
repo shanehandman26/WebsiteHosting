@@ -3,11 +3,81 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Canvas Game</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Ocean Rush — Jet Ski</title>
+    <link rel="stylesheet" href="style.css?v=relay-1">
+    <script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "zcpjnlldtq");
+</script>
 </head>
 <body>
-    <canvas id="gameCanvas" width="600" height="800"></canvas>
-    <script src="scripts/game.js"></script>
+    <main class="game-shell">
+        <header class="game-header">
+            <div><p class="eyebrow">NEON COAST / FREE ROAM</p><h1>OCEAN<span>RUSH</span></h1></div>
+            <span id="networkStatus" class="track-label" role="status">SINGLEPLAYER</span>
+        </header>
+        <section id="oceanScreen" class="track" aria-label="Top-down jet ski game">
+            <canvas id="gameCanvas" width="1200" height="660" aria-label="Person riding a jet ski on the ocean, viewed from above. W moves up, A left, S down, and D right."></canvas>
+            <div class="game-hud">
+                <div class="speedometer"><span id="speed">0</span><small>MPH</small></div>
+                <div class="boost-meter">
+                    <div class="boost-label"><label id="boostStatus" for="boostBar">BOOST</label><span id="boostAmount">100%</span></div>
+                    <progress id="boostBar" max="100" value="100" aria-label="Boost available"></progress>
+                    <small>HOLD Q · RELEASE TO RECHARGE</small>
+                </div>
+            </div>
+            <div class="health-hud">
+                <div class="boost-label"><label for="healthBar">RIDER HEALTH</label><span id="healthAmount">100%</span></div>
+                <progress id="healthBar" max="100" value="100" aria-label="Rider health"></progress>
+            </div>
+            <section class="inventory" aria-label="Inventory">
+                <div class="inventory-heading"><span>INVENTORY</span><small id="inventoryCount">0 / 6</small></div>
+                <ol class="inventory-slots" role="listbox" aria-label="Inventory slots">
+                    <li id="inventorySlot1" role="option" aria-selected="true" aria-label="Inventory slot 1: empty"><span>1</span><img id="inventoryItem1" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability1" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 1" hidden></progress></li>
+                    <li id="inventorySlot2" role="option" aria-selected="false" aria-label="Inventory slot 2: empty"><span>2</span><img id="inventoryItem2" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability2" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 2" hidden></progress></li>
+                    <li id="inventorySlot3" role="option" aria-selected="false" aria-label="Inventory slot 3: empty"><span>3</span><img id="inventoryItem3" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability3" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 3" hidden></progress></li>
+                    <li id="inventorySlot4" role="option" aria-selected="false" aria-label="Inventory slot 4: empty"><span>4</span><img id="inventoryItem4" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability4" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 4" hidden></progress></li>
+                    <li id="inventorySlot5" role="option" aria-selected="false" aria-label="Inventory slot 5: empty"><span>5</span><img id="inventoryItem5" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability5" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 5" hidden></progress></li>
+                    <li id="inventorySlot6" role="option" aria-selected="false" aria-label="Inventory slot 6: empty"><span>6</span><img id="inventoryItem6" src="assets/spear.svg" alt="Spear" hidden><progress id="inventoryDurability6" class="gun-durability" max="12" value="0" aria-label="Gun durability in slot 6" hidden></progress></li>
+                </ol>
+            </section>
+            <p id="pickupPrompt" class="pickup-prompt" hidden>E · PICK UP SPEAR GUN</p>
+            <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="Enter fullscreen" aria-pressed="false">⛶ Fullscreen</button>
+            <div class="fullscreen-touch-controls" aria-label="Fullscreen touch controls">
+                <button id="fullscreen-moveUp" type="button" aria-label="Hold to move up">↑</button>
+                <button id="fullscreen-moveLeft" type="button" aria-label="Hold to move left">←</button>
+                <button id="fullscreen-moveDown" type="button" aria-label="Hold to move down">↓</button>
+                <button id="fullscreen-moveRight" type="button" aria-label="Hold to move right">→</button>
+                <button id="fullscreen-boostButton" type="button" aria-label="Hold to boost">Q BOOST</button>
+            </div>
+            <div id="gameOver" class="game-over" hidden>
+                <div><h2>You were caught!</h2><p id="deathCause">Shark Attack</p><button id="restartButton" type="button">Ride again ↺</button></div>
+            </div>
+        </section>
+        <footer class="controls">
+            <p><kbd>W</kbd> Up <kbd>A</kbd> Left <kbd>S</kbd> Down <kbd>D</kbd> Right <kbd>Q</kbd> Boost</p>
+            <button id="resetButton" type="button">Reset rider ↺</button>
+        </footer>
+        <div class="touch-controls" aria-label="Touch jet ski controls">
+            <button id="moveUp" type="button" aria-label="Hold to move up">↑ UP</button>
+            <button id="moveLeft" type="button" aria-label="Hold to move left">← LEFT</button>
+            <button id="moveDown" type="button" aria-label="Hold to move down">↓ DOWN</button>
+            <button id="moveRight" type="button" aria-label="Hold to move right">RIGHT →</button>
+            <button id="boostButton" type="button" aria-label="Hold to boost">HOLD TO BOOST · Q</button>
+        </div>
+        <form id="roomForm" class="room-controls" method="get">
+            <label for="roomName">MULTIPLAYER ROOM</label>
+            <input id="roomName" name="room" value="ocean" maxlength="24" pattern="[a-z0-9-]{1,24}" required autocomplete="off" aria-describedby="roomHelp">
+            <button type="submit">Join room</button>
+            <small id="roomHelp">Share this page's URL to ride together. Movement and shots are shared; enemies and damage are local.</small>
+        </form>
+        <p class="hint">Each ocean territory has a patrolling shark. Staying still draws your area's guard toward you. Use Q to escape.</p>
+    </main>
+    <script src="scripts/relay-config.js?v=relay-1"></script>
+    <script src="scripts/multiplayer.js?v=relay-1"></script>
+    <script src="scripts/game.js?v=relay-1"></script>
 </body>
 </html>

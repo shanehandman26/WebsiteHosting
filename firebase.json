@@ -1,4 +1,13 @@
 {
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "auth": {
+    "providers": {
+      "anonymous": true
+    }
+  },
   "hosting": {
     "public": "public",
     "ignore": [
