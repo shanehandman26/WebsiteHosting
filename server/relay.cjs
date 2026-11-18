@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const PUBLIC = path.resolve(__dirname, '../public');
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const finite = (v, min, max) => Number.isFinite(v) && v >= min && v <= max;
 
 function cleanState(s) {

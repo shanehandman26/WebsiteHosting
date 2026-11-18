@@ -100,6 +100,9 @@ test('health and game are served without exposing repository files', async t => 
     const game = await fetch(f.base + '/game.html');
     assert.equal(game.status, 200);
     assert.match(await game.text(), /multiplayer.js/);
+    const logo = await fetch(f.base + '/assets/ocean-rush-logo.png');
+    assert.equal(logo.status, 200);
+    assert.equal(logo.headers.get('content-type'), 'image/png');
     assert.equal((await fetch(f.base + '/package.json')).status, 404);
     assert.equal((await fetch(f.base + '/%2e%2e%2fserver/relay.cjs')).status, 404);
 });
