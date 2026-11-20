@@ -19,6 +19,9 @@ class OceanMultiplayer {
         this.poseRevision = -1;
         this.generation = -1;
         this.controls = { x: 0, y: 0 };
+        this.predictedShots = [];
+        this.nextShotId = 1;
+        this.lastEdgeAt = -Infinity;
         const params = new URLSearchParams(location.search);
         this.hosting = params.get('action') === 'host';
         this.room = (params.get('room') || '').trim().toUpperCase();
@@ -123,6 +126,8 @@ class OceanMultiplayer {
                 this.syncLobby();
             } else if (msg.type === 'personal') {
                 this.applyPersonal(msg.you, true);
+            } else if (msg.type === 'action_ack') {
+                if (!msg.accepted) this.predictedShots = this.predictedShots.filter(s => s.shotId !== msg.shotId);
             } else if (msg.type === 'state') this.receive(msg.id, msg.state, now);
             else if (msg.type === 'leave') this.peers.delete(msg.id);
             else if (msg.type === 'pong') {
@@ -134,7 +139,7 @@ class OceanMultiplayer {
         socket.addEventListener('error', () => socket.close());
         socket.addEventListener('close', () => {
             clearTimeout(timeout);
-            this.peers.clear(); this.rtt = null; this.ready = false; this.playing = false; this.starting = false; this.worldSamples = [];
+            this.peers.clear(); this.predictedShots = []; this.rtt = null; this.ready = false; this.playing = false; this.starting = false; this.worldSamples = [];
             this.syncLobby();
             if (this.closed) return;
             this.status.textContent = 'OFFLINE · RETRYING';
@@ -157,8 +162,9 @@ class OceanMultiplayer {
     }
 
     send(message) {
-        if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 8192) return;
+        if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 8192) return false;
         this.socket.send(JSON.stringify(message));
+        return true;
     }
 
     tick() {
@@ -168,7 +174,14 @@ class OceanMultiplayer {
         const g = this.game;
         if (this.playing && !this.spectating) {
             const aimAngle = g.onPirateShip ? g.pirateCannonPose(true).angle : (g.aimAngle?.() ?? g.rider.angle - Math.PI / 2);
-            this.send({ type: 'state', revision: this.poseRevision, slot: g.selectedSlot, controls: { ...this.controls, aimAngle }, state: { ...g.rider, onFoot: g.onFoot,
+            let controls = this.controls;
+            if (g.keys) {
+                const held = key => g.keys.has(key) || g.touchDirections?.has(key) === true;
+                const x = Number(held('d')) - Number(held('a')), y = Number(held('s')) - Number(held('w'));
+                const length = Math.hypot(x, y) || 1;
+                controls = { x: x / length, y: y / length };
+            }
+            this.send({ type: 'state', revision: this.poseRevision, slot: g.selectedSlot, controls: { ...controls, aimAngle }, state: { ...g.rider, onFoot: g.onFoot,
                 onPirateShip: g.onPirateShip, boosting: g.boosting, dead: g.gameOver } });
         }
         if (now >= this.nextPing) {
@@ -182,11 +195,19 @@ class OceanMultiplayer {
         if (action === 'respawn') return false;
         if (!['start', 'next_round'].includes(action) && (!this.playing || this.spectating)) return false;
         this.tick();
-        this.send({ type: 'action', action, slot: this.game.selectedSlot, ...values });
-        return true;
+        return this.send({ type: 'action', action, slot: this.game.selectedSlot, ...values });
     }
 
-    shot(angle) { return this.action('fire', { angle }); }
+    inputChanged() {
+        const now = performance.now();
+        if (now - this.lastEdgeAt < 8) return;
+        this.lastEdgeAt = now;
+        this.tick();
+    }
+
+    shot(angle, shotId) { return this.action('fire', { angle, ...(Number.isInteger(shotId) ? { shotId } : {}) }); }
+
+    predictShip(dx, dy, dt) { this.game.moveCapturedShip(dx, dy, dt); }
 
     fire() {
         const g = this.game, gun = g.inventory[g.selectedSlot];
@@ -194,7 +215,13 @@ class OceanMultiplayer {
             (gun.type !== 'cannon' && gun.durability <= 0)) return false;
         const cannon = gun.type === 'cannon';
         const angle = cannon ? g.pirateCannonPose(true).angle : g.aimAngle();
-        if (!this.shot(angle)) return false;
+        const shotId = this.nextShotId++;
+        if (!this.shot(angle, shotId)) return false;
+        const speed = cannon ? 320 : gun.type === 'firecracker' ? 650 : 1100;
+        const origin = cannon ? g.pirateCannonPose(true) : { muzzleX: g.rider.x + Math.cos(angle) * 43, muzzleY: g.rider.y + Math.sin(angle) * 43 };
+        this.predictedShots.push({ shotId, x: origin.muzzleX, y: origin.muzzleY,
+            vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+            cannon, firecracker: gun.type === 'firecracker', at: performance.now() });
         g.nextShotAt = g.time + (cannon ? 3 : 0.2);
         g.muzzleFlash = { x: g.rider.x + Math.cos(angle) * 48, y: g.rider.y + Math.sin(angle) * 48,
             angle, startedAt: g.time, duration: 0.14 };
@@ -207,12 +234,13 @@ class OceanMultiplayer {
             this.generation = you.generation;
             g.releaseControls();
             g.boost = 100; g.wake = []; g.islandCollision = null;
-            g.nextShotAt = 0; g.muzzleFlash = null;
+            g.nextShotAt = 0; g.muzzleFlash = null; this.predictedShots = [];
         }
         if (you.poseRevision > this.poseRevision) {
             this.poseRevision = you.poseRevision;
             Object.assign(g.rider, { x: you.x, y: you.y, vx: you.vx, vy: you.vy, angle: you.angle });
             g.islandCollision = null;
+            if (you.onPirateShip) Object.assign(g.pirateShip, { x: you.x, y: you.y, angle: you.angle - Math.PI / 2 });
             g.updateCamera();
         }
         this.spectator = you.spectator === true;
@@ -239,7 +267,7 @@ class OceanMultiplayer {
         const g = this.game;
         const wasPlaying = this.playing;
         const newRound = world.round !== this.roundNumber;
-        if (newRound) { this.roundNumber = world.round; this.worldSamples = []; this.peers.clear(); }
+        if (newRound) { this.roundNumber = world.round; this.worldSamples = []; this.peers.clear(); this.pickupKey = null; }
         this.phase = world.phase;
         this.result = world.result;
         this.aliveCount = world.aliveCount || 0;
@@ -250,28 +278,35 @@ class OceanMultiplayer {
         this.pilotId = world.pilotId;
         this.worldSamples.push({ ...world, at: now });
         if (this.worldSamples.length > 6) this.worldSamples.shift();
-        g.floatingGuns = world.guns;
-        g.loot = world.loot || [];
         g.fireworkBursts = world.fireworkBursts || [];
-        for (let i = 0; i < g.islands.length; i++) {
-            const remaining = new Set(world.coconuts[i]);
-            g.islands[i].coconuts = this.layout[i].coconuts.filter(c => remaining.has(c.id));
-            const chests = new Map((world.chests?.[i] || []).map(chest => [chest.id, chest.opened]));
-            g.islands[i].chests = (this.layout[i].chests || []).map(chest => ({
-                ...chest, opened: chests.get(chest.id) ?? chest.opened
-            }));
+        const pickupKey = JSON.stringify([world.guns, world.loot, world.coconuts, world.chests]);
+        if (pickupKey !== this.pickupKey) {
+            this.pickupKey = pickupKey;
+            g.floatingGuns = world.guns;
+            g.loot = world.loot || [];
+            for (let i = 0; i < g.islands.length; i++) {
+                const remaining = new Set(world.coconuts[i]);
+                g.islands[i].coconuts = this.layout[i].coconuts.filter(c => remaining.has(c.id));
+                const chests = new Map((world.chests?.[i] || []).map(chest => [chest.id, chest.opened]));
+                g.islands[i].chests = (this.layout[i].chests || []).map(chest => ({
+                    ...chest, opened: chests.get(chest.id) ?? chest.opened
+                }));
+            }
         }
+        const acknowledged = new Set([...world.projectiles, ...world.cannonballs]
+            .filter(s => s.shooter === this.id && s.clientShotId).map(s => s.clientShotId));
+        this.predictedShots = this.predictedShots.filter(s => !acknowledged.has(s.shotId));
         g.blood = world.blood;
         if (this.worldSamples.length === 1) {
             g.time = world.time;
-            g.sharks = world.sharks; g.pirateShip = world.pirateShip;
+            g.sharks = world.sharks; g.pirateShip = { ...world.pirateShip };
             g.projectiles = world.projectiles; g.cannonballs = world.cannonballs;
         }
     }
 
     advance() {
         if (!this.ready || !this.worldSamples.length) return;
-        const now = performance.now(), target = now - 75;
+        const now = performance.now(), target = now - 33;
         let a = this.worldSamples[0], b = a;
         for (const sample of this.worldSamples) {
             b = sample;
@@ -292,10 +327,29 @@ class OceanMultiplayer {
         };
         const g = this.game;
         g.sharks = entities(a.sharks, b.sharks);
-        g.pirateShip = interpolate(a.pirateShip, b.pirateShip);
-        g.projectiles = entities(a.projectiles, b.projectiles);
-        g.cannonballs = entities(a.cannonballs, b.cannonballs);
-        g.time = a.time + (b.time - a.time) * t;
+        const latest = this.worldSamples.at(-1);
+        const predict = (entity, age) => {
+            if (entity.state === 'dead') return { ...entity };
+            return { ...entity, x: Math.max(0, Math.min(6000, entity.x + (entity.vx || 0) * age)),
+                y: Math.max(0, Math.min(4000, entity.y + (entity.vy || 0) * age)) };
+        };
+        if (target > b.at) {
+            const age = Math.min((target - b.at) / 1000, 0.05);
+            g.sharks = b.sharks.map(s => predict(s, age));
+        }
+        const ship = target > b.at ? predict(b.pirateShip, Math.min((target - b.at) / 1000, 0.05)) : interpolate(a.pirateShip, b.pirateShip);
+        if (g.onPirateShip && this.pilotId === this.id && !this.spectating) {
+            const age = Math.min(((now - latest.at) + (this.rtt || 0) / 2) / 1000, 0.1);
+            const expected = predict(latest.pirateShip, age), local = g.pirateShip;
+            const distance = Math.hypot(local.x - expected.x, local.y - expected.y);
+            const amount = distance > 100 ? 1 : 0.12;
+            g.pirateShip = { ...latest.pirateShip, x: local.x + (expected.x - local.x) * amount,
+                y: local.y + (expected.y - local.y) * amount, angle: local.angle, cruiseDirection: local.cruiseDirection };
+        } else g.pirateShip = ship;
+        const shotAge = Math.min(((now - latest.at) + (this.rtt || 0) / 2) / 1000, 0.1);
+        g.projectiles = latest.projectiles.map(s => predict(s, shotAge));
+        g.cannonballs = latest.cannonballs.map(s => predict(s, shotAge));
+        // Local simulation/cooldown time must never be rewound by delayed packets.
         this.worldTime = this.worldSamples.at(-1).time;
         if (this.spectating) {
             const alive = [...this.peers].filter(([, peer]) => !peer.state.dead && !peer.state.spectator);
@@ -311,10 +365,15 @@ class OceanMultiplayer {
 
     updateStatus() {
         const label = this.phase === 'running' ? this.aliveCount + ' LEFT' : this.phase === 'finished' ? 'ROUND OVER' : (this.peers.size + 1) + ' RIDERS';
-        this.status.textContent = `${label} · ${this.rtt === null ? '…' : this.rtt + ' MS RTT'} · ${this.room.toUpperCase()}`;
+        const text = `${label} · ${this.rtt === null ? '…' : this.rtt + ' MS RTT'} · ${this.room.toUpperCase()}`;
+        if (this.status.textContent !== text) this.status.textContent = text;
     }
 
     syncLobby() {
+        const key = [this.ready, this.phase, this.hostId, this.id, this.starting, this.peers.size,
+            this.spectating, this.spectator, this.aliveCount, this.result?.winnerId, this.result?.winnerLabel].join('|');
+        if (key === this.lobbyKey) return;
+        this.lobbyKey = key;
         this.waitingPanel.hidden = !this.ready || this.phase !== 'waiting';
         this.startButton.hidden = this.id !== this.hostId;
         this.startButton.disabled = !this.ready || this.starting || this.peers.size < 1;
@@ -352,6 +411,14 @@ class OceanMultiplayer {
     receive(id, state, now) {
         if (id === this.id) return;
         const peer = this.peers.get(id);
+        const sequence = peer?.samples.at(-1)?.motionSeq;
+        if (Number.isFinite(state.motionSeq) && Number.isFinite(sequence) && state.motionSeq <= sequence) {
+            if (state.motionSeq === sequence) {
+                peer.state = state;
+                peer.samples.at(-1).username = state.username;
+            }
+            return;
+        }
         // Keep two samples for a short interpolation buffer; no network wait for local controls.
         const samples = peer?.samples || [];
         samples.push({ ...state, at: now });
@@ -360,7 +427,7 @@ class OceanMultiplayer {
     }
 
     position(peer, now) {
-        const target = now - 50;
+        const target = now - 20;
         const samples = peer.samples;
         let a = samples[0], b = a;
         for (const sample of samples) {
@@ -393,6 +460,21 @@ class OceanMultiplayer {
             ctx.restore();
         }
 
+    }
+
+    drawPredictedShots() {
+        const g = this.game, now = performance.now();
+        this.predictedShots = this.predictedShots.filter(s => now - s.at < Math.min(240, (this.rtt || 40) + 100));
+        for (const s of this.predictedShots) {
+            const dt = (now - s.at) / 1000, x = s.x + s.vx * dt, y = s.y + s.vy * dt;
+            if (!g.isOnScreen({ x, y })) continue;
+            if (s.firecracker) g.drawFirecracker(x, y, Math.atan2(s.vy, s.vx));
+            else if (s.cannon) g.ellipse(x, y, 9, 9, '#17182a');
+            else {
+                const ctx = g.ctx; ctx.save(); ctx.strokeStyle = '#dcecf0'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(x - s.vx * 0.025, y - s.vy * 0.025); ctx.lineTo(x, y); ctx.stroke(); ctx.restore();
+            }
+        }
     }
 
     drawNames() {

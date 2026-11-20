@@ -311,3 +311,25 @@ test('pirate movement cannot cut across a shoreline chord between multiple route
         }
     } finally { Math.random = original; }
 });
+
+
+test('authoritative firing acknowledges only accepted shots and preserves the client visual ID', () => {
+    const { world, a } = fixture();
+    assert.equal(world.action('a', { action: 'fire', slot: 0, angle: 0, shotId: 1 }), false);
+    a.inventory[0] = { id: 'gun', durability: 12 };
+    assert.equal(world.action('a', { action: 'fire', slot: 0, angle: 0, shotId: 2 }), true);
+    assert.equal(world.projectiles[0].clientShotId, 2);
+    assert.equal(world.projectiles[0].shooter, 'a');
+    assert.equal(world.action('a', { action: 'fire', slot: 0, angle: 0, shotId: 3 }), false);
+    assert.equal(a.inventory[0].durability, 11);
+});
+
+test('world snapshots retain rendering and prediction data without shark navigation payloads', () => {
+    const { world } = fixture();
+    world.stepWorld(1 / 60);
+    const sharks = world.snapshot().sharks;
+    assert.ok(sharks.every(s => Number.isFinite(s.vx) && Number.isFinite(s.vy)));
+    assert.ok(sharks.every(s => s.health === 3 && Number.isFinite(s.leapDuration)));
+    assert.ok(JSON.stringify(sharks).length < JSON.stringify(world.sharks).length * 0.7);
+    assert.ok(world.sharks.every(s => s.territory), 'The authoritative AI keeps its navigation data');
+});

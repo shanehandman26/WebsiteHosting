@@ -356,9 +356,21 @@ WebSocket upgrades, and CORS; Node serves HTTP on `process.env.PORT`.
 
 Local steering and island collisions run immediately. Player movement sends
 at 30 Hz with TCP_NODELAY and compression disabled. The server simulates enemies
-and combat at 60 Hz and sends world snapshots at 20 Hz. Browsers interpolate
-enemy and projectile positions with a 75 ms buffer; other riders use a 50 ms
-buffer and at most 100 ms prediction. Server damage and pickup confirmations
+and combat at 60 Hz, serviced every 60 Hz tick, and sends world snapshots at
+30 Hz. Browsers interpolate enemies with a 33 ms buffer and at most 50 ms
+prediction; other riders use a 20 ms buffer and at most 100 ms prediction.
+Movement sequences prevent repeated snapshots from resetting interpolation.
+Input changes send immediately, alongside regular movement updates. Captured
+ship steering predicts locally using the same collision checks, with server
+corrections. Firing shows an immediate provisional shot, replaced by the
+server-confirmed projectile; damage and ammunition remain server-controlled.
+Projectiles render from the latest snapshot with bounded prediction. Local
+cooldown time is no longer rewound by delayed world snapshots.
+
+Snapshots omit unused shark navigation data. Inventory, health, boost, lobby,
+and pickup displays update only when changed. The night-light mask is reused
+when its screen-relative geometry is unchanged. These changes reduce repeated
+rendering and DOM work as well as bandwidth. Server damage and pickup confirmations
 arrive over the network. Snapshots do not overwrite ordinary local steering;
 server-issued position revisions handle boarding, new-round spawns, and corrections.
 Buffered stale movement is dropped, slow receivers reconnect, dead connections receive heartbeat checks,

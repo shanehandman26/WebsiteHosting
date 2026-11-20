@@ -466,7 +466,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=usernames-41'));
+        assert.ok(html.includes('game.js?v=latency-42'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }
@@ -2407,4 +2407,34 @@ test('nearby spear-gun pickup still takes priority over disembarking, and reset 
     assert.equal(game.parkedBoat, null);
     assert.equal(game.walkIsland, null);
     assert.equal(game.rider.x, 3000);
+});
+
+
+test('unchanged lighting reuses the mask and changed heading rebuilds it', () => {
+    const { game } = setup();
+    let gradients = 0;
+    const original = game.nightContext.createRadialGradient;
+    game.nightContext.createRadialGradient = (...args) => { gradients++; return original(...args); };
+    game.drawNightLighting();
+    const first = gradients;
+    assert.ok(first > 0);
+    for (let i = 0; i < 60; i++) game.drawNightLighting();
+    assert.equal(gradients, first);
+    game.rider.angle += 0.2;
+    game.drawNightLighting();
+    assert.ok(gradients > first);
+});
+
+test('unchanged inventory avoids repeated image writes while ammunition changes stay visible', () => {
+    const { game } = setup();
+    let writes = 0;
+    Object.defineProperty(game.inventoryLabels[0], 'src', { set() { writes++; } });
+    for (let i = 0; i < 60; i++) game.updateInventory();
+    assert.equal(writes, 0);
+    game.inventory[0] = { id: 'gun', durability: 12 };
+    game.updateInventory();
+    assert.equal(writes, 1);
+    game.inventory[0].durability = 11;
+    game.updateInventory();
+    assert.equal(game.durabilityBars[0].value, 11);
 });

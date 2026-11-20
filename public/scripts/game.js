@@ -181,6 +181,7 @@ class Game {
         else this.keys.delete(key);
         if (key === 'q' && freshPress && !event.repeat) this.useQ();
         if (key === 'e' && freshPress && !event.repeat) this.interact();
+        if (freshPress || !pressed) this.multiplayer?.inputChanged?.();
     }
 
     createGuns() {
@@ -210,6 +211,10 @@ class Game {
     }
 
     updateInventory() {
+        const key = this.selectedSlot + ':' + this.inventory.map(item => item ?
+            [item.id, item.type, item.name, item.durability].join(',') : '').join('|');
+        if (this.inventoryDisplayKey === key) return;
+        this.inventoryDisplayKey = key;
         for (let index = 0; index < this.inventory.length; index++) {
             const item = this.inventory[index];
             this.inventorySlots[index].classList.toggle('selected', index === this.selectedSlot);
@@ -737,10 +742,11 @@ class Game {
             event.preventDefault();
             button.setPointerCapture(event.pointerId);
             this.touchDirections.add(direction);
+            this.multiplayer?.inputChanged?.();
             if (direction === 'q') this.useQ();
         });
         for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-            button.addEventListener(event, () => this.touchDirections.delete(direction));
+            button.addEventListener(event, () => { this.touchDirections.delete(direction); this.multiplayer?.inputChanged?.(); });
         }
     }
 
@@ -1433,6 +1439,10 @@ class Game {
         const origin = this.lightOrigin();
         const ox = origin.x - this.camera.x;
         const oy = origin.y - this.camera.y;
+        const key = [width, height, Math.round(x * 2), Math.round(y * 2), Math.round(ox * 2), Math.round(oy * 2),
+            Math.round(origin.heading * 1000), this.nearLightRadius, this.headlightRange, this.headlightHalfAngle].join(',');
+        if (key === this.nightMaskKey) { this.ctx.drawImage(this.nightCanvas, 0, 0); return; }
+        this.nightMaskKey = key;
         mask.clearRect(0, 0, width, height);
         mask.fillStyle = 'rgba(0, 5, 18, 0.86)';
         mask.fillRect(0, 0, width, height);
@@ -1542,6 +1552,8 @@ class Game {
     }
 
     updateHealthDisplay() {
+        if (this.healthDisplayValue === this.health) return;
+        this.healthDisplayValue = this.health;
         this.healthBar.value = this.health;
         this.healthAmount.textContent = this.health + '%';
     }
@@ -1890,6 +1902,10 @@ class Game {
     }
 
     updateBoostDisplay() {
+        const status = this.boosting ? 'BOOSTING' : this.boost === 0 ? 'EMPTY' : 'BOOST';
+        const key = Math.round(this.boost) + ':' + status;
+        if (this.boostDisplayKey === key) return;
+        this.boostDisplayKey = key;
         this.boostBar.value = this.boost;
         this.boostAmount.textContent = Math.round(this.boost) + '%';
         this.boostStatus.textContent = this.boosting ? 'BOOSTING' :
@@ -1970,7 +1986,7 @@ class Game {
         const backingOff = !!this.islandCollision;
         if (this.multiplayer) this.multiplayer.controls = { x: dx, y: dy };
         if (this.onPirateShip) {
-            if (this.multiplayer) this.syncPirateRider();
+            if (this.multiplayer) this.multiplayer.predictShip(dx, dy, dt);
             else this.moveCapturedShip(dx, dy, dt);
         } else if (this.onFoot) {
             this.walkOnIsland(dx, dy, dt);
@@ -2158,6 +2174,7 @@ class Game {
             this.sharkShape([[-29, 0], [-34, -3], [-34, 3]], '#efa85b');
             ctx.restore();
         }
+        this.multiplayer?.drawPredictedShots?.();
         if (this.aim.active && this.inventory[this.selectedSlot] && this.inventory[this.selectedSlot].type !== 'coconut' && !this.gameOver) {
             const x = this.camera.x + this.aim.u * width;
             const y = this.camera.y + this.aim.v * height;

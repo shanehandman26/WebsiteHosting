@@ -7,6 +7,10 @@ const PLAYER_FIELDS = ['health', 'gameOver', 'invulnerable', 'inventory', 'selec
     'onFoot', 'onPirateShip', 'parkedBoat', 'walkIsland', 'stowedCannonSlot',
     'boardReadyAt', 'riderStillTime', 'zoneDamageCarry', 'survivalSeconds', 'nextShotAt'];
 const visibleEntity = entity => Object.fromEntries(Object.entries(entity).filter(([key]) => !key.startsWith('route')));
+const SHARK_RENDER_FIELDS = ['id', 'x', 'y', 'vx', 'vy', 'angle', 'state', 'timer', 'health',
+    'maxHealth', 'hitUntil', 'splashAge', 'leapDuration', 'targetId', 'respawnAt'];
+const renderShark = shark => Object.fromEntries(SHARK_RENDER_FIELDS.filter(key => shark[key] !== undefined)
+    .map(key => [key, typeof shark[key] === 'number' ? Math.round(shark[key] * 1000) / 1000 : shark[key]]));
 
 class RoomWorld extends Game {
     constructor() {
@@ -31,7 +35,7 @@ class RoomWorld extends Game {
             onFoot: false, onPirateShip: false, parkedBoat: null, walkIsland: null,
             stowedCannonSlot: null, boardReadyAt: 0, riderStillTime: 0, zoneDamageCarry: 0,
             survivalSeconds: 0, nextShotAt: 0, cause: '', poseRevision: 0, generation: 0,
-            controls: { x: 0, y: 0 }, lastInputAt: this.time, lastActionAt: -1
+            controls: { x: 0, y: 0 }, motionSeq: 0, lastInputAt: this.time, lastActionAt: -1
         };
         player.spectator = this.phase !== 'waiting';
         if (player.spectator) { player.gameOver = true; player.health = 0; player.cause = 'Spectating'; }
@@ -162,7 +166,7 @@ class RoomWorld extends Game {
     }
 
     stateFor(player) {
-        return { ...player.pose, username: player.username, onFoot: player.onFoot, onPirateShip: player.onPirateShip,
+        return { ...player.pose, motionSeq: player.motionSeq, username: player.username, onFoot: player.onFoot, onPirateShip: player.onPirateShip,
             boosting: player.boosting === true, dead: player.gameOver, spectator: player.spectator };
     }
 
@@ -198,6 +202,7 @@ class RoomWorld extends Game {
         }
         p.boosting = state.boosting;
         p.lastInputAt = this.time;
+        p.motionSeq++;
         return this.stateFor(p);
     }
 
@@ -224,7 +229,7 @@ class RoomWorld extends Game {
             if (!p.onPirateShip && this.canBoardPirateShip() && this.pilotId) return false;
             const mode = [this.onFoot, this.onPirateShip];
             super.interact();
-            if (mode[0] !== this.onFoot || mode[1] !== this.onPirateShip) p.poseRevision++;
+            if (mode[0] !== this.onFoot || mode[1] !== this.onPirateShip) { p.poseRevision++; p.motionSeq++; }
             if (this.onPirateShip) { this.pilotId = id; p.aimAngle ??= this.pirateShip.angle; }
             else if (this.pilotId === id) this.pilotId = null;
         } else {
@@ -235,9 +240,12 @@ class RoomWorld extends Game {
                 u: (this.rider.x + Math.cos(message.angle) * 1000 - this.camera.x) / this.canvas.width,
                 v: (this.rider.y + Math.sin(message.angle) * 1000 - this.camera.y) / this.canvas.height };
             const count = this.projectiles.length, balls = this.cannonballs.length;
-            super.fireGun();
-            for (const shot of this.projectiles.slice(count)) shot.shooter = id;
-            for (const ball of this.cannonballs.slice(balls)) ball.shooter = id;
+            const fired = super.fireGun();
+            const clientShotId = Number.isInteger(message.shotId) && message.shotId > 0 && message.shotId < 1e9 ? message.shotId : undefined;
+            for (const shot of this.projectiles.slice(count)) { shot.shooter = id; shot.clientShotId = clientShotId; }
+            for (const ball of this.cannonballs.slice(balls)) { ball.shooter = id; ball.clientShotId = clientShotId; }
+            this.savePlayer();
+            return fired === true;
         }
         this.savePlayer();
         return true;
@@ -303,15 +311,20 @@ class RoomWorld extends Game {
         }
         const sharks = this.sharks;
         for (const shark of sharks) {
+            const oldX = shark.x, oldY = shark.y;
             const target = this.nearest(shark, true);
             if (target) this.usePlayer(target);
             else { this.activePlayer = null; this.gameOver = false; this.riderStillTime = 0; }
             shark.targetId = target?.id || null;
             this.sharks = [shark];
             super.updateSharks(dt);
+            const speed = Math.hypot(shark.x - oldX, shark.y - oldY) / dt;
+            shark.vx = speed <= this.sharkSpeed * 1.2 ? (shark.x - oldX) / dt : 0;
+            shark.vy = speed <= this.sharkSpeed * 1.2 ? (shark.y - oldY) / dt : 0;
             this.savePlayer();
         }
         this.sharks = sharks;
+        const shipX = this.pirateShip.x, shipY = this.pirateShip.y;
         const pilot = this.players.get(this.pilotId);
         if (pilot && !pilot.gameOver) {
             this.usePlayer(pilot);
@@ -319,6 +332,7 @@ class RoomWorld extends Game {
             if (this.time - pilot.lastInputAt > 1) this.pirateShip.cruiseDirection = null;
             const length = Math.hypot(controls.x, controls.y) || 1;
             this.moveCapturedShip(controls.x / length, controls.y / length, dt); this.savePlayer();
+            pilot.motionSeq++;
         } else {
             const target = this.nearest(this.pirateShip);
             if (target) this.usePlayer(target);
@@ -326,6 +340,8 @@ class RoomWorld extends Game {
             this.pirateShip.targetId = target?.id || null;
             super.updatePirateShip(dt);
         }
+        this.pirateShip.vx = (this.pirateShip.x - shipX) / dt;
+        this.pirateShip.vy = (this.pirateShip.y - shipY) / dt;
         this.updateProjectiles(dt);
         this.advanceCannonballs(dt);
         const gunner = this.players.get(this.pilotId) || this.nearest(this.pirateShip);
@@ -444,7 +460,7 @@ class RoomWorld extends Game {
         for (const entity of [...this.projectiles, ...this.cannonballs]) entity.id ??= this.nextEntityId++;
         return { protocol: 4, phase: this.phase, hostId: this.hostId, round: this.roundNumber, result: this.result,
             aliveCount: [...this.participants].filter(id => this.alive(this.players.get(id))).length, tick: this.tickNumber, time: this.time,
-            sharks: this.sharks.map(visibleEntity), pirateShip: visibleEntity(this.pirateShip),
+            sharks: this.sharks.map(renderShark), pirateShip: visibleEntity(this.pirateShip),
             pilotId: this.pilotId, projectiles: this.projectiles, cannonballs: this.cannonballs,
             blood: this.blood, guns: this.floatingGuns, loot: this.loot, fireworkBursts: this.fireworkBursts,
             coconuts: this.islands.map(island => island.coconuts.map(c => c.id)),

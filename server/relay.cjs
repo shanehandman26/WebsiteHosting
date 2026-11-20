@@ -83,6 +83,7 @@ function createRelay() {
         if (ws.readyState !== WebSocket.OPEN) return;
         // Slow receivers reconnect instead of accumulating stale movement.
         if (ws.bufferedAmount > 64 * 1024) return ws.terminate();
+        if (message.type === 'world' && ws.bufferedAmount > 8192) return; // Keep only fresh snapshots.
         ws.send(JSON.stringify(message));
     };
     server.on('upgrade', (req, socket, head) => {
@@ -142,7 +143,11 @@ function createRelay() {
                 if (!ws.state) return;
                 broadcast({ type: 'state', id: ws.id, state: ws.state });
             } else if (msg.type === 'action' && world) {
-                if (world.action(ws.id, msg)) send(ws, { type: 'personal', you: world.personal(ws.id) });
+                const accepted = world.action(ws.id, msg);
+                if (accepted) send(ws, { type: 'personal', you: world.personal(ws.id) });
+                if (msg.action === 'fire' && Number.isInteger(msg.shotId)) {
+                    send(ws, { type: 'action_ack', shotId: msg.shotId, accepted });
+                }
             } else if (msg.type === 'shot' && !world && ws.state && !ws.state.dead && now - ws.lastShot >= 150 &&
                 finite(msg.angle, -1e6, 1e6)) {
                 ws.lastShot = now;
@@ -160,7 +165,7 @@ function createRelay() {
             }
         });
     });
-    // Fixed 60 Hz physics, 20 Hz snapshots. An empty room is retained but paused.
+    // Service physics every display-sized tick, with evenly paced 30 Hz snapshots.
     let lastStep = Date.now();
     let accumulator = 0, snapshotClock = 0;
     const simulation = setInterval(() => {
@@ -171,8 +176,8 @@ function createRelay() {
             accumulator -= 1 / 60;
             snapshotClock += 1 / 60;
         }
-        if (snapshotClock >= 0.05) {
-            snapshotClock %= 0.05;
+        if (snapshotClock >= 1 / 30) {
+            snapshotClock %= 1 / 30;
             for (const peers of rooms.values()) {
                 if (!peers.size || !peers.world) continue;
                 const world = peers.world;
@@ -181,7 +186,7 @@ function createRelay() {
                 for (const peer of peers) send(peer, { type: 'world', world: snapshot, players, you: world.personal(peer.id) });
             }
         }
-    }, 1000 / 30);
+    }, 1000 / 60);
     simulation.unref();
     const heartbeat = setInterval(() => {
         expireRooms();

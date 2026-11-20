@@ -70,8 +70,8 @@ test('remote movement interpolates, predicts briefly, and handles leave and reco
     f.now(200);
     f.receive({ type: 'state', id: 'peer', state: { ...state, x: 110, angle: -Math.PI + 0.1 } });
     const peer = f.client.peers.get('peer');
-    assert.equal(f.client.position(peer, 200).x, 105);
-    assert.ok(Math.abs(f.client.position(peer, 200).angle - Math.PI) < 1e-10);
+    assert.equal(f.client.position(peer, 170).x, 105);
+    assert.ok(Math.abs(f.client.position(peer, 170).angle - Math.PI) < 1e-10);
     assert.equal(f.client.position(peer, 5000).x, 120, 'Prediction is capped at 100 ms');
     f.receive({ type: 'leave', id: 'peer' });
     assert.equal(f.client.peers.size, 0);
@@ -168,7 +168,7 @@ test('shared enemy updates interpolate without moving the local rider and remove
     f.client.worldSamples = [];
     f.client.receiveWorld(world(0, 100), 100);
     f.client.receiveWorld(world(0.1, 110), 200);
-    f.now(225); f.client.advance();
+    f.now(183); f.client.advance();
     assert.equal(f.game.sharks[0].x, 105);
     assert.equal(f.game.pirateShip.x, 105);
     assert.equal(f.game.rider.x, 3000);
@@ -320,4 +320,67 @@ test('chosen names are sent as profile data and used for remote floating labels'
     f.receive({ type: 'state', id: 'other', state: { username: 'Neon_7', x: 3200, y: 2100, vx: 0, vy: 0, angle: 0, dead: false } });
     f.client.drawNames();
     assert.deepEqual(labels, [{ x: 3200, name: 'Neon_7' }]);
+});
+
+
+test('duplicate world movement samples do not reset peer interpolation or prediction', () => {
+    const f = setup(); f.welcome();
+    const state = { x: 100, y: 200, vx: 100, vy: 0, angle: 0, motionSeq: 1 };
+    f.client.receive('peer', state, 100);
+    f.client.receive('peer', { ...state, username: 'Wave', dead: true }, 133);
+    const peer = f.client.peers.get('peer');
+    assert.equal(peer.samples.length, 1);
+    assert.equal(peer.samples[0].at, 100);
+    assert.equal(peer.state.dead, true, 'Health and elimination metadata still arrive');
+    assert.equal(peer.samples[0].username, 'Wave');
+    f.client.receive('peer', { ...state, x: 50, motionSeq: 0 }, 140);
+    assert.equal(peer.state.x, 100, 'Older motion cannot rewind a rider');
+    f.client.receive('peer', { ...state, x: 110, motionSeq: 2 }, 150);
+    assert.equal(peer.samples.length, 2);
+    assert.equal(f.client.position(peer, 170).x, 110);
+});
+
+test('delayed world packets do not rewind local cooldown time and enemy prediction is bounded', () => {
+    const f = setup(); f.welcome();
+    f.game.time = 10;
+    const world = { ...f.client.worldSamples[0], time: 0.1,
+        sharks: [{ id: 0, x: 100, y: 200, vx: 100, vy: 0, state: 'chase', angle: 0 }] };
+    f.client.receiveWorld(world, 133);
+    f.now(1000); f.client.advance();
+    assert.equal(f.game.time, 10);
+    assert.equal(f.game.sharks[0].x, 105, 'Extrapolation stops after 50 ms');
+});
+
+test('shots appear immediately and reconcile with authoritative shots or rejection', () => {
+    const f = setup(); f.welcome();
+    f.game.inventory[0] = { id: 'gun', durability: 12 };
+    f.game.aimAngle = () => 0;
+    f.game.nextShotAt = 0;
+    assert.equal(f.client.fire(), true);
+    assert.equal(f.client.predictedShots.length, 1);
+    assert.equal(f.game.inventory[0].durability, 12, 'Prediction does not change authoritative ammunition');
+    const shotId = f.client.predictedShots[0].shotId;
+    assert.equal(f.socket.sent.at(-1).shotId, shotId);
+    f.client.receiveWorld({ ...f.client.worldSamples[0], projectiles: [{ shooter: 'self', clientShotId: shotId }] }, 120);
+    assert.equal(f.client.predictedShots.length, 0, 'Confirmed shots replace provisional visuals');
+    f.game.time = 1;
+    assert.equal(f.client.fire(), true);
+    f.receive({ type: 'action_ack', shotId: f.client.predictedShots[0].shotId, accepted: false });
+    assert.equal(f.client.predictedShots.length, 0);
+    f.socket.bufferedAmount = 10000; f.game.time = 2;
+    assert.equal(f.client.fire(), false, 'Unsent shots cannot start provisional effects');
+});
+
+test('ship controls run local movement immediately and input changes send without waiting for a timer', () => {
+    const f = setup(); f.welcome();
+    let moved;
+    f.game.moveCapturedShip = (...args) => { moved = args; };
+    f.client.predictShip(1, 0, 1 / 60);
+    assert.deepEqual(moved, [1, 0, 1 / 60]);
+    f.game.keys = new Set(['d']);
+    f.client.inputChanged();
+    const packet = f.socket.sent.at(-1);
+    assert.equal(packet.type, 'state');
+    assert.equal(packet.controls.x, 1);
+    assert.equal(packet.controls.y, 0);
 });
