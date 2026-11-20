@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 function setup({ search = '?room=crew' } = {}) {
     let now = 100;
-    const elements = Object.fromEntries(['networkStatus', 'roomCodeHud', 'roomCode', 'roomFeedback', 'roomLobbyLink', 'roomWaiting', 'startGameButton', 'waitingPlayers', 'waitingMessage', 'minimapLegend']
+    const elements = Object.fromEntries(['networkStatus', 'roomCodeHud', 'roomCode', 'roomFeedback', 'roomLobbyLink', 'roomWaiting', 'startGameButton', 'waitingPlayers', 'waitingMessage', 'minimapLegend', 'roundResult', 'nextRoundButton', 'resetButton', 'restartButton', 'roundWinner', 'roundResultMessage', 'spectatorBanner']
         .map(id => [id, { hidden: true, addEventListener(name, fn) { this[name] = fn; } }]));
     const timers = [], intervals = [];
     class Socket {
@@ -35,8 +35,8 @@ function setup({ search = '?room=crew' } = {}) {
     if (socket) { socket.readyState = 1; socket.events.open(); }
     const receive = msg => client.socket.events.message({ data: JSON.stringify(msg) });
     const welcome = (room = 'CREW', id = 'self', phase = 'running', hostId = id) => receive({
-        type: 'welcome', id, room, players: [], protocol: 3, layout: [],
-        world: { phase, hostId, time: 0, tick: 0, sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
+        type: 'welcome', id, room, players: [], protocol: 4, layout: [],
+        world: { phase, hostId, round: 1, aliveCount: 2, result: null, time: 0, tick: 0, sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
             projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [], pilotId: null },
         you: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, generation: 0, poseRevision: 0,
             inventory: Array(6).fill(null), selectedSlot: 0, health: 100, dead: false,
@@ -177,19 +177,25 @@ test('shared enemy updates interpolate without moving the local rider and remove
     assert.equal(f.game.islands[0].points[1][0], 10, 'Shared pickup changes preserve polygon geometry');
 });
 
-test('shared chest snapshots update opened lids while retaining their layout and empty contents', () => {
+test('shared chest snapshots update lids, dropped firecrackers, and firework effects', () => {
     const f = setup(); f.welcome();
     const chest = { id: 'chest-0', x: 20, y: 10, opened: false, items: [] };
     f.client.layout = [{ coconuts: [], chests: [chest] }];
     f.game.islands = [{ coconuts: [], chests: [chest] }];
+    const loot = { id: 'loot-0', type: 'firecracker', durability: 5, x: 1000, y: 1000, islandIndex: 0 };
+    const burst = { x: 1500, y: 1000, startedAt: 1, duration: 0.65 };
     f.client.receiveWorld({ phase: 'running', hostId: 'self', time: 1, tick: 60,
         sharks: [], pirateShip: { x: 1000, y: 1000, angle: 0 }, projectiles: [], cannonballs: [],
-        guns: [], blood: [], coconuts: [[]], chests: [[{ id: 'chest-0', opened: true }]] }, 100);
+        guns: [], blood: [], coconuts: [[]], chests: [[{ id: 'chest-0', opened: true }]],
+        loot: [loot], fireworkBursts: [burst] }, 100);
     const visible = f.game.islands[0].chests[0];
     assert.equal(visible.opened, true);
     assert.equal(visible.x, 20); assert.equal(visible.y, 10);
     assert.equal(visible.items.length, 0);
     assert.equal(chest.opened, false);
+    assert.equal(f.game.loot[0].durability, 5);
+    assert.equal(f.game.loot[0].id, 'loot-0');
+    assert.equal(f.game.fireworkBursts[0].x, 1500);
 });
 
 test('an outdated relay cannot silently start a locally simulated multiplayer world', () => {
@@ -209,6 +215,9 @@ test('the waiting lobby offers Start Game only to the host and blocks other game
     assert.equal(f.socket.sent.some(m => m.type === 'state'), false);
     assert.equal(f.client.action('interact'), false);
     assert.equal(f.client.action('respawn'), false);
+    assert.equal(f.elements.startGameButton.disabled, true, 'Two connected players are required');
+    f.receive({ type: 'state', id: 'guest', state: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, dead: false } });
+    f.client.syncLobby();
     f.elements.startGameButton.click();
     assert.equal(f.socket.sent.at(-1).action, 'start');
     assert.equal(f.elements.startGameButton.disabled, true);
@@ -224,7 +233,7 @@ test('the server start snapshot dismisses the lobby and applies the assigned spa
     const f = setup();
     f.welcome('CREW', 'host', 'waiting');
     f.receive({ type: 'world',
-        world: { phase: 'running', hostId: 'host', time: 0, tick: 0, sharks: [],
+        world: { phase: 'running', hostId: 'host', round: 1, aliveCount: 2, result: null, time: 0, tick: 0, sharks: [],
             pirateShip: { x: 3000, y: 1000, angle: 0 }, projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [] },
         players: [{ id: 'host', state: { x: 720, y: 800 } }],
         you: { x: 720, y: 800, vx: 0, vy: 0, angle: 0, generation: 1, poseRevision: 1,
@@ -251,4 +260,53 @@ test('the minimap includes distant living players and removes dead or disconnect
     assert.equal(f.client.minimapPlayers()[0].x, 5200);
     f.receive({ type: 'leave', id: 'far' });
     assert.equal(f.client.minimapPlayers().length, 0);
+});
+
+function roundPacket({ phase = 'running', round = 1, result = null, you = {}, players = [] } = {}) {
+    return { type: 'world', players,
+        world: { phase, round, result, hostId: 'self', aliveCount: 2, time: 0, tick: 0,
+            sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
+            projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [] },
+        you: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, generation: 1, poseRevision: 1,
+            inventory: Array(6).fill(null), selectedSlot: 0, health: 100, dead: false, spectator: false,
+            onFoot: false, onPirateShip: false, boardReadyIn: 0, survivalSeconds: 0, ...you }
+    };
+}
+
+test('eliminated players spectate without respawn buttons, input messages, or a blocking death screen', () => {
+    const f = setup(); f.welcome();
+    f.receive(roundPacket({ you: { health: 0, dead: true, cause: 'Spear hit' },
+        players: [{ id: 'other', state: { x: 5100, y: 3000, vx: 0, vy: 0, angle: 0, dead: false } }] }));
+    assert.equal(f.client.spectating, true);
+    assert.equal(f.game.gameOverPanel.hidden, true);
+    assert.equal(f.elements.spectatorBanner.hidden, false);
+    assert.match(f.elements.spectatorBanner.textContent, /ELIMINATED/);
+    assert.equal(f.elements.restartButton.hidden, true); assert.equal(f.elements.resetButton.hidden, true);
+    assert.equal(f.client.action('respawn'), false); assert.equal(f.client.action('interact'), false);
+    const count = f.socket.sent.length;
+    f.client.advance(); f.client.tick();
+    assert.equal(f.game.rider.x, 5100, 'Spectator camera follows a living player');
+    assert.equal(f.socket.sent.slice(count).some(m => m.type === 'state'), false);
+});
+
+test('late joiners see spectator status and everyone sees the authoritative winner screen', () => {
+    const f = setup(); f.welcome();
+    f.receive(roundPacket({ you: { spectator: true, dead: true, health: 0 } }));
+    assert.match(f.elements.spectatorBanner.textContent, /SPECTATING/);
+    f.receive(roundPacket({ phase: 'finished', result: { winnerId: 'other', winnerLabel: 'Rider othe' },
+        you: { spectator: true, dead: true, health: 0 },
+        players: [{ id: 'other', state: { x: 5000, y: 3000, vx: 0, vy: 0, angle: 0, dead: false } }] }));
+    assert.equal(f.elements.roundResult.hidden, false);
+    assert.equal(f.elements.roomWaiting.hidden, true);
+    assert.equal(f.elements.roundWinner.textContent, 'Rider othe wins!');
+    assert.equal(f.elements.spectatorBanner.hidden, true);
+    assert.equal(f.elements.nextRoundButton.hidden, false);
+    f.elements.nextRoundButton.click();
+    assert.equal(f.socket.sent.at(-1).action, 'next_round');
+    f.receive(roundPacket({ round: 2, you: { generation: 2, poseRevision: 2, x: 720, y: 800 },
+        players: [{ id: 'other', state: { x: 5200, y: 3000, vx: 0, vy: 0, angle: 0, dead: false } }] }));
+    assert.equal(f.elements.roundResult.hidden, true);
+    assert.equal(f.client.playing, true); assert.equal(f.client.spectating, false);
+    assert.equal(f.game.gameOver, false); assert.equal(f.game.health, 100);
+    assert.equal(f.game.rider.x, 720);
 });

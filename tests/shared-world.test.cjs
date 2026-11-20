@@ -35,7 +35,7 @@ test('only the host can start, and the lobby blocks movement, combat and the gam
     assert.ok(world.time > 0);
 });
 
-test('sixteen players start in separated, safe map locations; late join and respawn also scatter', () => {
+test('sixteen players start in separated safe locations and late joiners cannot enter the active round', () => {
     const world = new RoomWorld();
     for (let i = 0; i < 16; i++) world.addPlayer('p' + i);
     world.start('p0');
@@ -50,18 +50,17 @@ test('sixteen players start in separated, safe map locations; late join and resp
         }
     }
     const host = world.hostId;
-    world.action(host, { action: 'respawn' });
-    assert.equal(world.hostId, host, 'Respawning must not transfer host privileges');
+    assert.equal(world.action(host, { action: 'respawn' }), false);
+    assert.equal(world.hostId, host);
     world.removePlayer('p15');
     const late = world.addPlayer('late');
-    for (const p of world.players.values()) if (p.id !== late.id) {
-        assert.ok(Math.hypot(p.pose.x - late.pose.x, p.pose.y - late.pose.y) >= 500);
-    }
+    assert.equal(late.spectator, true);
+    assert.equal(late.gameOver, true);
 });
 
 test('the next connected player becomes host when the host leaves the lobby', () => {
     const world = new RoomWorld();
-    world.addPlayer('host'); world.addPlayer('next');
+    world.addPlayer('host'); world.addPlayer('next'); world.addPlayer('third');
     world.removePlayer('host');
     assert.equal(world.phase, 'waiting');
     assert.equal(world.hostId, 'next');
@@ -86,7 +85,7 @@ test('one room owns immutable island geometry and current world data for late jo
     assert.equal(snapshot.sharks[0].routeIslands, undefined, 'Navigation caches are not sent over the network');
 });
 
-test('opening an empty chest is server-owned and shared with every player and late joiner', () => {
+test('chest loot is server-owned and only one player can claim its firecracker', () => {
     const world = new RoomWorld();
     const a = world.addPlayer('a'), b = world.addPlayer('b');
     world.start('a');
@@ -102,9 +101,36 @@ test('opening an empty chest is server-owned and shared with every player and la
     assert.equal(a.inventory.every(item => item === null), true);
     assert.equal(b.inventory.every(item => item === null), true);
     assert.equal(chest.items.length, 0);
+    assert.equal(world.loot.length, 1);
+    assert.equal(world.snapshot().loot[0].durability, 5);
+    for (const p of [a, b]) Object.assign(p.pose, { x: world.loot[0].x, y: world.loot[0].y });
+    world.time += 0.2;
+    world.action('a', { action: 'interact' });
+    world.action('b', { action: 'interact' });
+    assert.equal(a.inventory.filter(item => item?.type === 'firecracker').length, 1);
+    assert.equal(b.inventory.filter(item => item?.type === 'firecracker').length, 0);
+    assert.equal(world.loot.length, 0);
     world.addPlayer('late');
     assert.equal(world.snapshot().chests[index][0].opened, true);
     assert.equal(world.layout[index].chests[0].opened, false, 'Immutable layout keeps the original chest position');
+});
+
+test('shared firecracker shots consume five ammo and their bouncing damage and effects come from the server', () => {
+    const { world, a } = fixture();
+    world.start('a');
+    Object.assign(a.pose, { x: 3000, y: 2000, angle: Math.PI / 2 });
+    const shark = world.sharks[0];
+    world.sharks = [shark]; Object.assign(shark, { x: 3100, y: 2000, health: 3, state: 'chase' });
+    a.inventory[0] = { id: 'firecracker-shared', type: 'firecracker', name: 'Firecracker', durability: 5 };
+    world.action('a', { action: 'fire', slot: 0, angle: 0 });
+    assert.equal(a.inventory[0].durability, 4);
+    assert.equal(world.projectiles[0].type, 'firecracker');
+    assert.equal(world.projectiles[0].shooter, 'a');
+    world.updateProjectiles(1.5);
+    assert.equal(shark.health, 1);
+    assert.equal(world.snapshot().fireworkBursts.length, 3);
+    for (let i = 0; i < 4; i++) { world.time += 0.21; world.action('a', { action: 'fire', slot: 0, angle: 0 }); }
+    assert.equal(a.inventory[0], null);
 });
 
 test('sharks choose the nearest living rider and switch when that rider dies', () => {
@@ -209,22 +235,15 @@ test('a broken gun creates one shared replacement and cannot fire again', () => 
     assert.equal(world.floatingGuns.length, 1);
 });
 
-test('respawning resets only the requesting rider, preserving the room and other players', () => {
+test('respawn requests cannot revive an eliminated player or reset the room', () => {
     const { world, a, b } = fixture();
-    a.gameOver = true; a.health = 0;
-    b.health = 50;
-    world.sharks[0].health = 1; world.pirateShip.hits = 12;
-    world.time = 100;
+    a.gameOver = true; a.health = 0; b.health = 50;
     const before = JSON.stringify(world.snapshot());
-    world.action('a', { action: 'respawn' });
-    assert.equal(JSON.stringify(world.snapshot()), before);
-    const fresh = world.players.get('a');
-    assert.equal(fresh.health, 100);
-    assert.equal(fresh.gameOver, false);
-    assert.equal(fresh.generation, 1);
-    assert.equal(fresh.poseRevision, 1);
+    assert.equal(world.action('a', { action: 'respawn' }), false);
+    assert.equal(a.health, 0);
+    assert.equal(a.gameOver, true);
     assert.equal(b.health, 50);
-    assert.equal(world.time, 100);
+    assert.equal(JSON.stringify(world.snapshot()), before);
 });
 
 test('only one player can pilot the captured ship, with shared movement and cannon fire', () => {
@@ -267,15 +286,15 @@ test('pirate attacks target the nearest player and server cannonballs apply dama
     assert.equal(a.health, 25);
 });
 
-test('stale position messages cannot undo a respawn or boarding correction', () => {
-    const { world, a } = fixture();
-    world.action('a', { action: 'respawn' });
-    const fresh = world.players.get('a');
+test('stale pre-start position messages cannot undo the server spawn correction', () => {
+    const world = new RoomWorld();
+    const a = world.addPlayer('a'); world.addPlayer('b');
+    world.start('a');
+    const x = a.pose.x;
     world.updatePlayer('a', { ...a.pose, x: 3400 }, 0, 0);
-    const spawnX = fresh.pose.x;
-    assert.notEqual(spawnX, 3400);
-    world.updatePlayer('a', { ...fresh.pose, x: spawnX + 5 }, fresh.poseRevision, 0);
-    assert.equal(fresh.pose.x, spawnX + 5);
+    assert.equal(a.pose.x, x);
+    world.updatePlayer('a', { ...a.pose, x: x + 5 }, a.poseRevision, 0);
+    assert.equal(a.pose.x, x + 5);
 });
 
 test('pirate movement cannot cut across a shoreline chord between multiple route waypoints', () => {

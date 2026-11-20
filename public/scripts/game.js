@@ -59,6 +59,8 @@ class Game {
         this.boatRadius = 32;
         this.floatingGuns = this.createGuns();
         this.projectiles = [];
+        this.loot = [];
+        this.fireworkBursts = [];
         this.nextShotAt = 0;
         this.muzzleFlash = null;
         this.aim = { u: 0.5, v: 0.3, active: false };
@@ -140,7 +142,7 @@ class Game {
             margin: 60, boatRadius: 32, sharkClearance: 64, navigation: null,
             sharkSpeed: 30 * 1609.344 / 3600 * 14.4,
             gunMaxDurability: 12, nextGunId: 7, inventory: Array(6).fill(null), selectedSlot: 0,
-            projectiles: [], cannonballs: [], blood: [], bloodLifetime: 12, bloodAttractionRadius: 1400,
+            projectiles: [], cannonballs: [], loot: [], fireworkBursts: [], blood: [], bloodLifetime: 12, bloodAttractionRadius: 1400,
             time: 0, survivalSeconds: 0, health: 100, gameOver: false, invulnerable: 0,
             onFoot: false, onPirateShip: false, parkedBoat: null, walkIsland: null,
             boardReadyAt: 0, riderStillTime: 0, zoneDamageCarry: 0,
@@ -215,12 +217,15 @@ class Game {
             this.inventoryLabels[index].hidden = !item;
             const cannon = item?.type === 'cannon';
             const coconut = item?.type === 'coconut';
-            this.inventoryLabels[index].src = cannon ? 'assets/cannon.svg' : coconut ? 'assets/coconut.svg' : 'assets/spear.svg';
-            this.inventoryLabels[index].alt = cannon ? 'Cannon' : coconut ? 'Coconut' : 'Spear';
+            const firecracker = item?.type === 'firecracker';
+            const maxShots = firecracker ? 5 : this.gunMaxDurability;
+            this.inventoryLabels[index].src = cannon ? 'assets/cannon.svg' : coconut ? 'assets/coconut.svg' : firecracker ? 'assets/firecracker.svg' : 'assets/spear.svg';
+            this.inventoryLabels[index].alt = cannon ? 'Cannon' : coconut ? 'Coconut' : firecracker ? 'Firecracker' : 'Spear';
             this.durabilityBars[index].hidden = !item || cannon || coconut;
+            this.durabilityBars[index].max = maxShots;
             this.durabilityBars[index].value = item && !cannon && !coconut ? item.durability : 0;
             this.durabilityBars[index].setAttribute('aria-valuetext', cannon ? 'Cannon: one shot every 3 seconds' :
-                coconut ? 'Coconut' : item ? item.durability + ' of ' + this.gunMaxDurability + ' shots remaining' : 'Empty slot');
+                coconut ? 'Coconut' : item ? item.durability + ' of ' + maxShots + ' shots remaining' : 'Empty slot');
         }
         this.inventoryCount.textContent = this.inventory.filter(Boolean).length + ' / 6';
     }
@@ -287,7 +292,33 @@ class Game {
         const chest = this.nearbyChest();
         if (!chest) return false;
         chest.opened = true;
+        const island = this.walkIsland;
+        let x = island.x + chest.x + 26, y = island.y + chest.y + 18;
+        if (!this.canWalkAt(x, y, island)) { x = island.x + chest.x; y = island.y + chest.y; }
+        this.loot.push({ id: chest.id + '-firecracker', type: 'firecracker', name: 'Firecracker',
+            durability: 5, x, y, islandIndex: this.islands.indexOf(island) });
         this.updatePickupPrompt();
+        return true;
+    }
+
+    nearbyLoot() {
+        if (!this.onFoot || !this.walkIsland || !this.canWalkAt(this.rider.x, this.rider.y)) return null;
+        let closest = null, distance = 58;
+        for (const item of this.loot) {
+            if (item.islandIndex !== this.islands.indexOf(this.walkIsland)) continue;
+            const separation = Math.hypot(item.x - this.rider.x, item.y - this.rider.y);
+            if (separation <= distance) { closest = item; distance = separation; }
+        }
+        return closest;
+    }
+
+    pickUpLoot() {
+        const item = this.nearbyLoot(), slot = this.inventory.indexOf(null);
+        if (this.gameOver || !item || slot < 0) return false;
+        this.inventory[slot] = { id: item.id, type: item.type, name: item.name, durability: item.durability };
+        this.loot = this.loot.filter(loot => loot !== item);
+        this.selectedSlot = slot;
+        this.updateInventory(); this.updatePickupPrompt();
         return true;
     }
 
@@ -311,6 +342,12 @@ class Game {
             this.pickupPrompt.textContent = 'E · EAT COCONUT';
             return;
         }
+        const loot = this.nearbyLoot();
+        if (loot && this.inventory.includes(null)) {
+            this.pickupPrompt.hidden = false;
+            this.pickupPrompt.textContent = 'E · PICK UP ' + loot.name.toUpperCase();
+            return;
+        }
         if (this.onPirateShip || this.canBoardPirateShip()) {
             this.pickupPrompt.hidden = false;
             this.pickupPrompt.textContent = this.onPirateShip ? 'E · RETURN TO JET SKI' : 'E · BOARD PIRATE SHIP';
@@ -327,7 +364,7 @@ class Game {
             this.pickupPrompt.textContent = 'E · BOARD JET SKI';
             return;
         }
-        if (coconut) {
+        if (coconut || loot) {
             this.pickupPrompt.hidden = false;
             this.pickupPrompt.textContent = 'INVENTORY FULL';
             return;
@@ -375,6 +412,7 @@ class Game {
         if (this.multiplayer) return this.multiplayer.action('interact');
         if (this.gameOver) return;
         if (this.eatCoconut()) return;
+        if (this.nearbyLoot() && this.inventory.includes(null)) { this.pickUpLoot(); return; }
         if (this.onPirateShip) {
             const saved = this.stowedCannonSlot;
             this.inventory[saved.slot] = saved.item;
@@ -502,10 +540,13 @@ class Game {
         if (gun?.type === 'cannon') return this.firePlayerCannon();
         if (this.gameOver || !gun || !Number.isInteger(gun.durability) || gun.durability <= 0 || this.time < this.nextShotAt) return false;
         const angle = this.aimAngle();
+        const firecracker = gun.type === 'firecracker';
         this.projectiles.push({
             x: this.rider.x + Math.cos(angle) * 43,
             y: this.rider.y + Math.sin(angle) * 43,
-            vx: Math.cos(angle) * 1100, vy: Math.sin(angle) * 1100, life: 1.2
+            vx: Math.cos(angle) * (firecracker ? 650 : 1100), vy: Math.sin(angle) * (firecracker ? 650 : 1100),
+            life: firecracker ? 1.5 : 1.2,
+            ...(firecracker ? { type: 'firecracker', impacts: 0, hopRemaining: 0.42, hitTargets: [] } : {})
         });
         this.multiplayer?.shot(angle);
         this.nextShotAt = this.time + 0.2;
@@ -516,7 +557,7 @@ class Game {
         gun.durability--;
         if (gun.durability === 0) {
             this.inventory[this.selectedSlot] = null;
-            this.spawnReplacementGun();
+            if (!firecracker) this.spawnReplacementGun();
         }
         this.updateInventory();
         this.updatePickupPrompt();
@@ -563,7 +604,9 @@ class Game {
     }
 
     updateProjectiles(dt) {
+        this.fireworkBursts = this.fireworkBursts.filter(burst => this.time - burst.startedAt < burst.duration);
         for (const shot of this.projectiles) {
+            if (shot.type === 'firecracker') { this.updateFirecracker(shot, dt); continue; }
             const travelTime = Math.min(dt, shot.life);
             const endX = shot.x + shot.vx * travelTime;
             const endY = shot.y + shot.vy * travelTime;
@@ -592,6 +635,51 @@ class Game {
         }
         this.projectiles = this.projectiles.filter(shot => shot.life > 0 &&
             shot.x >= 0 && shot.x <= this.world.width && shot.y >= 0 && shot.y <= this.world.height);
+    }
+
+    firecrackerImpact(shot) {
+        this.fireworkBursts.push({ x: shot.x, y: shot.y, startedAt: this.time, duration: 0.65 });
+        for (const shark of this.sharks) {
+            const key = 'shark-' + shark.id;
+            if (shark.state === 'dead' || shot.hitTargets.includes(key) ||
+                Math.hypot(shark.x - shot.x, shark.y - shot.y) > 80) continue;
+            shot.hitTargets.push(key);
+            this.damageShark(shark, 2);
+        }
+        const ship = this.pirateShip, dx = shot.x - ship.x, dy = shot.y - ship.y;
+        const x = dx * Math.cos(ship.angle) + dy * Math.sin(ship.angle);
+        const y = -dx * Math.sin(ship.angle) + dy * Math.cos(ship.angle);
+        if (!ship.disarmed && !shot.hitTargets.includes('pirate') && (x / 260) ** 2 + (y / 122) ** 2 <= 1) {
+            shot.hitTargets.push('pirate');
+            this.damagePirateShip(2);
+        }
+    }
+
+    updateFirecracker(shot, dt) {
+        let remaining = Math.min(dt, shot.life);
+        for (let step = 0; step < 6 && remaining > 1e-8 && shot.life > 0; step++) {
+            const travel = Math.min(remaining, shot.hopRemaining);
+            const x = shot.x + shot.vx * travel, y = shot.y + shot.vy * travel;
+            let hit = null;
+            for (const shark of this.sharks) {
+                if (shark.state === 'dead' || shot.hitTargets.includes('shark-' + shark.id)) continue;
+                const t = this.segmentHit(shot.x, shot.y, x, y, shark);
+                if (t !== null && (hit === null || t < hit)) hit = t;
+            }
+            if (!this.pirateShip.disarmed && !shot.hitTargets.includes('pirate')) {
+                const t = this.pirateHullHit(shot.x, shot.y, x, y);
+                if (t !== null && (hit === null || t < hit)) hit = t;
+            }
+            const elapsed = travel * (hit ?? 1);
+            shot.x += shot.vx * elapsed; shot.y += shot.vy * elapsed;
+            shot.life -= elapsed; remaining -= elapsed; shot.hopRemaining -= elapsed;
+            if (hit !== null || shot.hopRemaining <= 1e-8) {
+                this.firecrackerImpact(shot);
+                shot.impacts++;
+                if (shot.impacts >= 3 || this.pointOnLand(shot.x, shot.y)) { shot.life = 0; break; }
+                shot.hopRemaining = 0.42;
+            }
+        }
     }
 
     isFullscreen() {
@@ -697,6 +785,8 @@ class Game {
         this.nextGunId = 7;
         this.floatingGuns = this.createGuns();
         this.projectiles = [];
+        this.loot = [];
+        this.fireworkBursts = [];
         this.nextShotAt = 0;
         this.muzzleFlash = null;
         this.aim.active = false;
@@ -761,10 +851,10 @@ class Game {
         return t >= 0 && t <= 1 ? t : null;
     }
 
-    damagePirateShip() {
+    damagePirateShip(damage = 1) {
         const ship = this.pirateShip;
         if (ship.disarmed) return;
-        ship.hits++;
+        ship.hits = Math.min(16, ship.hits + damage);
         if (ship.hits >= 16) {
             ship.disarmed = true;
             ship.route = [];
@@ -1995,6 +2085,9 @@ class Game {
         this.drawIslands();
         this.drawFish();
         this.drawBlood();
+        for (const item of this.loot) {
+            if (this.isOnScreen(item)) this.drawFirecracker(item.x, item.y, -0.5);
+        }
         for (const gun of this.floatingGuns) {
             if (!this.isOnScreen(gun)) continue;
             const bob = Math.sin(this.time * 2.5 + gun.x) * 4;
@@ -2036,15 +2129,19 @@ class Game {
         for (const shark of this.sharks) {
             if (this.isOnScreen(shark) && shark.state !== 'dead' && shark.state !== 'leap' && this.isPointLit(shark.x, shark.y)) this.drawShark(shark);
         }
-        if (this.onPirateShip) {
-            this.drawJetSki(this.parkedBoat, false);
-        } else if (this.onFoot) {
-            this.drawJetSki(this.parkedBoat, false);
-            this.drawWalkingRider();
-        } else this.drawJetSki();
-        if (this.inventory[this.selectedSlot] && !['cannon', 'coconut'].includes(this.inventory[this.selectedSlot].type)) {
-            const angle = this.aimAngle();
-            this.drawGun(this.rider.x + Math.cos(angle) * 26, this.rider.y + Math.sin(angle) * 26, angle);
+        if (!this.multiplayer?.spectating) {
+            if (this.onPirateShip) {
+                this.drawJetSki(this.parkedBoat, false);
+            } else if (this.onFoot) {
+                this.drawJetSki(this.parkedBoat, false);
+                this.drawWalkingRider();
+            } else this.drawJetSki();
+            if (this.inventory[this.selectedSlot] && !['cannon', 'coconut'].includes(this.inventory[this.selectedSlot].type)) {
+                const angle = this.aimAngle();
+                const x = this.rider.x + Math.cos(angle) * 26, y = this.rider.y + Math.sin(angle) * 26;
+                if (this.inventory[this.selectedSlot].type === 'firecracker') this.drawFirecracker(x, y, angle);
+                else this.drawGun(x, y, angle);
+            }
         }
         this.multiplayer?.draw();
         this.drawMuzzleFire();
@@ -2052,6 +2149,7 @@ class Game {
             if (this.isOnScreen(shark) && shark.state === 'leap' && this.isPointLit(shark.x, shark.y)) this.drawShark(shark);
         }
         for (const shot of this.projectiles) {
+            if (shot.type === 'firecracker') continue;
             ctx.save(); ctx.translate(shot.x, shot.y); ctx.rotate(Math.atan2(shot.vy, shot.vx));
             ctx.strokeStyle = '#dcecf0'; ctx.lineWidth = 2;
             ctx.beginPath(); ctx.moveTo(-32, 0); ctx.lineTo(-5, 0); ctx.stroke();
@@ -2079,6 +2177,7 @@ class Game {
         // Lantern-lit hull and burning cannonballs remain readable in the night.
         this.drawPirateShip();
         this.drawCannonballs();
+        this.drawFireworkEffects();
         this.drawSafeArea(ctx);
         ctx.restore();
         if (this.invulnerable > 0 && !this.gameOver) {
@@ -2107,10 +2206,59 @@ class Game {
             ctx.fillStyle = '#8fffd3'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
             ctx.beginPath(); ctx.arc(player.x * sx, player.y * sy, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
-        ctx.translate(this.rider.x * sx, this.rider.y * sy); ctx.rotate(this.rider.angle);
-        ctx.fillStyle = '#8ff5ff'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+        if (!this.multiplayer?.spectating) {
+            ctx.translate(this.rider.x * sx, this.rider.y * sy); ctx.rotate(this.rider.angle);
+            ctx.fillStyle = '#8ff5ff'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
         ctx.restore();
+    }
+
+    drawFirecracker(x, y, angle) {
+        const ctx = this.ctx;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+        ctx.fillStyle = '#ad713f'; ctx.fillRect(-29, -1, 22, 2);
+        ctx.fillStyle = '#ef3c7a'; ctx.fillRect(-15, -5, 25, 10);
+        ctx.fillStyle = '#fff0ca'; ctx.fillRect(-9, -5, 4, 10); ctx.fillRect(0, -5, 4, 10);
+        this.sharkShape([[19, 0], [8, -8], [8, 8]], '#ffda77');
+        this.sharkShape([[-15, 0], [-23, -9], [-12, -5]], '#38dbe9');
+        this.sharkShape([[-15, 0], [-23, 9], [-12, 5]], '#38dbe9');
+        ctx.strokeStyle = '#ffb158'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-15, 0); ctx.lineTo(-23, 3); ctx.stroke();
+        this.ellipse(-25, 3, 2, 2, '#fff0ac');
+        ctx.restore();
+    }
+
+    drawFireworkEffects() {
+        const ctx = this.ctx;
+        for (const shot of this.projectiles) {
+            if (shot.type !== 'firecracker') continue;
+            const angle = Math.atan2(shot.vy, shot.vx);
+            const lift = Math.sin(Math.max(0, Math.min(1, 1 - shot.hopRemaining / 0.42)) * Math.PI) * 24;
+            ctx.save(); ctx.shadowColor = '#ff69c7'; ctx.shadowBlur = 10;
+            ctx.strokeStyle = '#ffc969'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(shot.x - Math.cos(angle) * 45, shot.y - lift - Math.sin(angle) * 45);
+            ctx.lineTo(shot.x, shot.y - lift); ctx.stroke();
+            this.drawFirecracker(shot.x, shot.y - lift, angle);
+            ctx.restore();
+        }
+        for (const burst of this.fireworkBursts) {
+            const progress = (this.time - burst.startedAt) / burst.duration;
+            if (progress < 0 || progress >= 1) continue;
+            ctx.save(); ctx.translate(burst.x, burst.y); ctx.globalAlpha = 1 - progress;
+            ctx.strokeStyle = '#8ff5ff'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.ellipse(0, 0, 14 + progress * 65, 6 + progress * 25, 0, 0, Math.PI * 2); ctx.stroke();
+            ctx.shadowBlur = 9;
+            for (let i = 0; i < 14; i++) {
+                const angle = i / 14 * Math.PI * 2;
+                const distance = 12 + progress * 80;
+                ctx.strokeStyle = ['#ff69c7', '#ffd36b', '#5cf1ff', '#f4f1ff'][i % 4];
+                ctx.shadowColor = ctx.strokeStyle;
+                ctx.beginPath(); ctx.moveTo(Math.cos(angle) * distance * 0.65, Math.sin(angle) * distance * 0.65);
+                ctx.lineTo(Math.cos(angle) * distance, Math.sin(angle) * distance + progress * progress * 12); ctx.stroke();
+            }
+            ctx.restore();
+        }
     }
 
     drawMuzzleFire() {

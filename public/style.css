@@ -132,6 +132,11 @@ button:focus-visible { outline: 2px solid #ff5acb; outline-offset: 4px; }
 #startGameButton { margin-top: 12px; background: #8fffd3; color: #120c2b; font-weight: bold; padding: 14px 28px; }
 #startGameButton[hidden] { display: none; }
 #startGameButton:disabled { opacity: 0.6; cursor: wait; }
+#nextRoundButton { margin-top: 12px; background: #8fffd3; color: #120c2b; font-weight: bold; padding: 14px 28px; }
+#nextRoundButton[hidden], .spectator-banner[hidden] { display: none; }
+#nextRoundButton:disabled { opacity: 0.6; cursor: wait; }
+.spectator-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 24px); padding: 10px 14px; margin: 0; border: 1px solid #8fffd3; border-radius: 8px; color: #8fffd3; background: #190e3ee8; font-size: 13px; text-align: center; pointer-events: none; }
+@media (max-width: 600px) { .spectator-banner { top: 82px; font-size: 12px; } }
 .minimap-legend { margin: 5px 0 0; font-size: 10px; color: #d4bfe7; text-align: center; }
 @media (max-width: 600px) {
     .room-code { left: 8px; bottom: 8px; padding: 5px; }

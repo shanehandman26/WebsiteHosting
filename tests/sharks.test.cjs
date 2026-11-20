@@ -189,6 +189,14 @@ test('waiting for host start pauses local steering and the minimap scales other 
     assert.deepEqual(dots[1].args.slice(0, 2), [12, 20]);
 });
 
+test('a spectator minimap shows living riders without a phantom marker for the eliminated player', () => {
+    const { game, drawCalls } = setup({ room: 'CREW' });
+    game.multiplayer = { spectating: true, worldTime: 0, minimapPlayers: () => [{ x: 5000, y: 3000 }] };
+    game.drawMinimap();
+    assert.equal(drawCalls.filter(call => call.method === 'arc' && call.fillStyle === '#8fffd3').length, 1);
+    assert.equal(drawCalls.filter(call => call.method === 'fill' && call.fillStyle === '#8ff5ff').length, 0);
+});
+
 test('invalid or blocked browser storage cannot break survival timing', () => {
     for (const saved of ['not-a-number', '-10', 'Infinity']) {
         const fixture = setup({ storage: new Map([['ocean-rush-best-survival', saved]]) });
@@ -447,7 +455,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=chest-distribution-38'));
+        assert.ok(html.includes('game.js?v=pvp-rounds-40'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }
@@ -1388,7 +1396,7 @@ test('treasure chests generate on walkable island ground, contain no items, and 
     assert.equal(game.islands.flatMap(island => island.chests).every(chest => chest.opened === false), true);
 });
 
-test('Q opens a nearby chest on foot, shows an empty interior, and grants no loot', () => {
+test('Q opens a nearby chest on foot and drops one firecracker without auto-filling inventory', () => {
     const fixture = shoreSetup();
     const { game, elements } = fixture;
     const chest = { id: 'test-chest', x: -40, y: 0, opened: false, items: [] };
@@ -1400,7 +1408,11 @@ test('Q opens a nearby chest on foot, shows an empty interior, and grants no loo
     assert.equal(game.inventory.every(item => item === null), true);
     assert.equal(game.boosting, false);
     assert.equal(chest.items.length, 0);
+    assert.equal(game.loot.length, 1);
+    assert.equal(game.loot[0].type, 'firecracker');
+    assert.equal(game.loot[0].durability, 5);
     assert.equal(game.openChest(), false);
+    assert.equal(game.loot.length, 1);
     assert.equal(elements.pickupPrompt.textContent.includes('OPEN CHEST'), false);
     game.draw();
     assert.equal(fixture.drawDepth(), 0);
@@ -1438,6 +1450,97 @@ test('touch Q opens chests and multiplayer opening requests wait for the server'
     assert.equal(game.openChest(), true);
     assert.equal(actions[0], 'open_chest');
     assert.equal(chest.opened, false);
+});
+
+test('chest loot requires E, stays on the ground with a full inventory, and displays five shots', () => {
+    const fixture = shoreSetup();
+    const { game, elements } = fixture;
+    game.islands[0].chests = [{ id: 'loot-chest', x: -40, y: 0, opened: false, items: [] }];
+    fixture.key('e'); fixture.key('e', false); fixture.key('q'); fixture.key('q', false);
+    assert.equal(game.inventory.every(item => item === null), true);
+    const item = game.loot[0];
+    assert.equal(game.canWalkAt(item.x, item.y, game.islands[0]), true);
+    Object.assign(game.rider, { x: item.x, y: item.y });
+    game.inventory = Array.from({ length: 6 }, (_, i) => ({ id: 'full-' + i, name: 'Spear gun', durability: 12 }));
+    assert.equal(game.pickUpLoot(), false);
+    assert.equal(game.loot.length, 1);
+    game.inventory[3] = null;
+    fixture.key('e');
+    assert.equal(game.inventory[3].type, 'firecracker');
+    assert.equal(game.selectedSlot, 3);
+    assert.equal(game.loot.length, 0);
+    assert.equal(elements.inventoryItem4.src, 'assets/firecracker.svg');
+    assert.equal(elements.inventoryDurability4.max, 5);
+    assert.equal(elements.inventoryDurability4.value, 5);
+    assert.equal(game.pickUpLoot(), false);
+    game.reset();
+    assert.equal(game.loot.length, 0);
+});
+
+test('a firecracker fires exactly five shots and does not spawn replacement spear guns', () => {
+    const { game } = setup();
+    game.inventory[0] = { id: 'test-firecracker', type: 'firecracker', name: 'Firecracker', durability: 5 };
+    const pickups = game.floatingGuns.length;
+    for (let i = 0; i < 5; i++) {
+        assert.equal(game.fireGun(), true);
+        assert.equal(game.fireGun(), false, 'Cooldown prevents duplicate shots');
+        game.time += 0.21;
+    }
+    assert.equal(game.projectiles.length, 5);
+    assert.equal(game.inventory[0], null);
+    assert.equal(game.fireGun(), false);
+    assert.equal(game.floatingGuns.length, pickups);
+});
+
+test('firecracker impacts deal twice spear damage and reach two more enemies behind the first', () => {
+    const fixture = setup();
+    const { game } = fixture;
+    const first = fixture.shark(3100, 2000);
+    const second = { ...first, id: 98, x: 3260 }, third = { ...first, id: 99, x: 3420 };
+    game.sharks = [first, second, third];
+    game.inventory[0] = { type: 'firecracker', name: 'Firecracker', durability: 5 };
+    game.rider.angle = Math.PI / 2;
+    assert.equal(game.fireGun(), true);
+    const shot = game.projectiles[0];
+    game.updateProjectiles(1.5);
+    assert.equal(first.health, 1);
+    assert.equal(second.health, 1);
+    assert.equal(third.health, 1);
+    assert.equal(shot.impacts, 3);
+    assert.equal(game.projectiles.length, 0);
+    assert.equal(game.fireworkBursts.length, 3);
+    assert.ok(game.fireworkBursts[0].x < game.fireworkBursts[1].x && game.fireworkBursts[1].x < game.fireworkBursts[2].x);
+});
+
+test('firecrackers make three water impacts even on a miss and draw firework bursts without invalid transforms', () => {
+    const fixture = setup();
+    const { game } = fixture;
+    game.sharks = [];
+    game.inventory[0] = { type: 'firecracker', name: 'Firecracker', durability: 5 };
+    game.rider.angle = Math.PI / 2;
+    game.fireGun(); game.updateProjectiles(0.2); game.draw();
+    assert.equal(game.projectiles[0].impacts, 0);
+    game.updateProjectiles(1.3);
+    assert.equal(game.projectiles.length, 0);
+    assert.equal(game.fireworkBursts.length, 3);
+    game.draw();
+    assert.equal(fixture.drawDepth(), 0);
+    assert.ok(fixture.drawCalls.some(call => call.method === 'fillRect' && call.fillStyle === '#ef3c7a'));
+    game.time += 1; game.updateProjectiles(0);
+    assert.equal(game.fireworkBursts.length, 0);
+    game.reset();
+    assert.equal(game.fireworkBursts.length, 0);
+});
+
+test('firecracker impacts count as two spear hits against the pirate ship', () => {
+    const { game } = setup();
+    Object.assign(game.pirateShip, { x: 3200, y: 2000, angle: 0 });
+    game.sharks = [];
+    Object.assign(game.rider, { x: 2800, y: 2000, angle: Math.PI / 2 });
+    game.inventory[0] = { type: 'firecracker', name: 'Firecracker', durability: 5 };
+    game.fireGun(); game.updateProjectiles(1.5);
+    assert.equal(game.pirateShip.hits, 2);
+    assert.equal(game.pirateShip.disarmed, false);
 });
 
 function coconutSetup() {

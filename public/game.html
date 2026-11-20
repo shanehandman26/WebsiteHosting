@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ocean Rush — Jet Ski</title>
-    <link rel="stylesheet" href="style.css?v=host-start-37">
+    <link rel="stylesheet" href="style.css?v=pvp-rounds-40">
     <script type="text/javascript">
     (function(c,l,a,r,i,t,y){
         c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
@@ -77,6 +77,15 @@
             <div id="gameOver" class="game-over" hidden>
                 <div><h2>You were caught!</h2><p id="deathCause">Shark Attack</p><p id="gameOverTime"></p><button id="restartButton" type="button">Ride again ↺</button></div>
             </div>
+            <p id="spectatorBanner" class="spectator-banner" role="status" hidden></p>
+            <section id="roundResult" class="room-waiting round-result" aria-labelledby="roundWinner" hidden>
+                <div>
+                    <p class="eyebrow">ROUND OVER</p>
+                    <h2 id="roundWinner">LAST RIDER STANDING</h2>
+                    <p id="roundResultMessage"></p>
+                    <button id="nextRoundButton" type="button" hidden>Next Round</button>
+                </div>
+            </section>
         </section>
         <footer class="controls">
             <p><kbd>W</kbd> Up <kbd>A</kbd> Left <kbd>S</kbd> Down <kbd>D</kbd> Right <kbd>Q</kbd> Boost</p>
@@ -94,7 +103,7 @@
         <p class="hint">Each ocean territory has a patrolling shark. Staying still draws your area's guard toward you. Use Q to escape.</p>
     </main>
     <script src="scripts/relay-config.js?v=relay-1"></script>
-    <script src="scripts/multiplayer.js?v=host-start-37"></script>
-    <script src="scripts/game.js?v=chest-distribution-38"></script>
+    <script src="scripts/multiplayer.js?v=pvp-rounds-40"></script>
+    <script src="scripts/game.js?v=pvp-rounds-40"></script>
 </body>
 </html>

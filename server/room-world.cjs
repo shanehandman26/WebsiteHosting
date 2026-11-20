@@ -13,6 +13,9 @@ class RoomWorld extends Game {
         this.players = new Map();
         this.phase = 'waiting';
         this.hostId = null;
+        this.roundNumber = 0;
+        this.participants = new Set();
+        this.result = null;
         this.pilotId = null;
         this.tickNumber = 0;
         this.nextEntityId = 1;
@@ -29,9 +32,10 @@ class RoomWorld extends Game {
             survivalSeconds: 0, nextShotAt: 0, cause: '', poseRevision: 0, generation: 0,
             controls: { x: 0, y: 0 }, lastInputAt: this.time, lastActionAt: -1
         };
+        player.spectator = this.phase !== 'waiting';
+        if (player.spectator) { player.gameOver = true; player.health = 0; player.cause = 'Spectating'; }
         this.players.set(id, player);
         if (!this.hostId) this.hostId = id;
-        if (this.phase === 'running') Object.assign(player.pose, this.spawnPosition(id));
         return player;
     }
 
@@ -60,7 +64,7 @@ class RoomWorld extends Game {
     }
 
     start(id) {
-        if (this.phase !== 'waiting' || id !== this.hostId) return false;
+        if (this.phase !== 'waiting' || id !== this.hostId || this.players.size < 2) return false;
         const occupied = [];
         for (const player of this.players.values()) {
             Object.assign(player.pose, this.spawnPosition(player.id, occupied), { vx: 0, vy: 0, angle: 0 });
@@ -69,7 +73,48 @@ class RoomWorld extends Game {
             player.controls = { x: 0, y: 0 };
         }
         this.phase = 'running';
+        this.roundNumber++;
+        this.participants = new Set(this.players.keys());
+        this.result = null;
         return true;
+    }
+
+    alive(player) { return !!player && !player.gameOver && !player.spectator && player.health > 0; }
+
+    checkWinner() {
+        if (this.phase !== 'running' || this.participants.size < 2) return;
+        const survivors = [...this.participants].map(id => this.players.get(id)).filter(p => this.alive(p));
+        if (survivors.length > 1) return;
+        const winner = survivors[0];
+        this.result = { winnerId: winner?.id || null,
+            winnerLabel: winner ? 'Rider ' + winner.id.slice(0, 4) : null, round: this.roundNumber };
+        this.phase = 'finished';
+        for (const p of this.players.values()) p.controls = { x: 0, y: 0 };
+    }
+
+    nextRound(id) {
+        if (this.phase !== 'finished' || id !== this.hostId || this.players.size < 2) return false;
+        const previous = [...this.players.values()];
+        const hostId = this.hostId;
+        this.islands = structuredClone(this.layout);
+        this.navigation = this.pirateNavigation = null;
+        this.time = 0; this.tickNumber = 0;
+        this.projectiles = []; this.cannonballs = []; this.blood = [];
+        this.loot = []; this.fireworkBursts = [];
+        this.nextGunId = 7;
+        this.sharks = this.createSharks();
+        this.floatingGuns = this.createGuns();
+        this.rider = { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0 };
+        this.pirateShip = this.createPirateShip();
+        this.pilotId = null; this.activePlayer = null;
+        this.phase = 'waiting';
+        this.players.clear();
+        for (const old of previous) {
+            const p = this.addPlayer(old.id);
+            p.generation = old.generation; p.poseRevision = old.poseRevision;
+        }
+        this.hostId = hostId;
+        return this.start(id);
     }
 
     dropInventory(player) {
@@ -88,6 +133,7 @@ class RoomWorld extends Game {
         if (this.pilotId === id) { this.pilotId = null; this.pirateShip.cruiseDirection = null; }
         this.players.delete(id);
         if (!preserveHost && this.hostId === id) this.hostId = this.players.keys().next().value || null;
+        this.checkWinner();
     }
 
     usePlayer(player) {
@@ -107,7 +153,7 @@ class RoomWorld extends Game {
 
     stateFor(player) {
         return { ...player.pose, onFoot: player.onFoot, onPirateShip: player.onPirateShip,
-            boosting: player.boosting === true, dead: player.gameOver };
+            boosting: player.boosting === true, dead: player.gameOver, spectator: player.spectator };
     }
 
     personal(id) {
@@ -122,7 +168,7 @@ class RoomWorld extends Game {
 
     updatePlayer(id, state, revision, selectedSlot, controls) {
         const p = this.players.get(id);
-        if (!p || this.phase !== 'running' || p.gameOver || revision !== p.poseRevision) return p && this.stateFor(p);
+        if (!p || this.phase !== 'running' || !this.alive(p) || revision !== p.poseRevision) return p && this.stateFor(p);
         if (Number.isInteger(selectedSlot) && selectedSlot >= 0 && selectedSlot < 6) p.selectedSlot = selectedSlot;
         p.controls = { x: Number.isFinite(controls?.x) ? Math.max(-1, Math.min(1, controls.x)) : 0,
             y: Number.isFinite(controls?.y) ? Math.max(-1, Math.min(1, controls.y)) : 0 };
@@ -149,16 +195,10 @@ class RoomWorld extends Game {
         const p = this.players.get(id);
         if (!p) return false;
         if (message.action === 'start') return this.start(id);
+        if (message.action === 'next_round') return this.nextRound(id);
         if (this.phase !== 'running') return false;
-        if (message.action === 'respawn') {
-            if (this.time - p.lastActionAt < 0.2) return false;
-            const revision = p.poseRevision + 1, generation = p.generation + 1;
-            this.removePlayer(id, true);
-            const fresh = this.addPlayer(id);
-            fresh.poseRevision = revision; fresh.generation = generation; fresh.lastActionAt = this.time;
-            return true;
-        }
-        if (p.gameOver || !['interact', 'fire', 'open_chest'].includes(message.action)) return false;
+        if (message.action === 'respawn') return false;
+        if (!this.alive(p) || !['interact', 'fire', 'open_chest'].includes(message.action)) return false;
         if (Number.isInteger(message.slot) && message.slot >= 0 && message.slot < 6) p.selectedSlot = message.slot;
         this.usePlayer(p);
         if (message.action === 'open_chest') {
@@ -214,7 +254,7 @@ class RoomWorld extends Game {
     nearest(entity, sharks = false) {
         let result = null, distance = Infinity;
         for (const p of this.players.values()) {
-            if (p.gameOver || (sharks && p.onPirateShip)) continue;
+            if (!this.alive(p) || (sharks && p.onPirateShip)) continue;
             const d = Math.hypot(p.pose.x - entity.x, p.pose.y - entity.y);
             if (d < distance) { result = p; distance = d; }
         }
@@ -245,7 +285,7 @@ class RoomWorld extends Game {
         this.time += dt; this.tickNumber++;
         this.blood = this.blood.filter(pool => (pool.life -= dt) > 0);
         for (const p of this.players.values()) {
-            if (p.gameOver) continue;
+            if (!this.alive(p)) continue;
             p.survivalSeconds += dt;
             p.invulnerable = Math.max(0, p.invulnerable - dt);
             p.riderStillTime = Math.hypot(p.pose.vx, p.pose.vy) < 5 ? p.riderStillTime + dt : 0;
@@ -276,49 +316,127 @@ class RoomWorld extends Game {
             this.pirateShip.targetId = target?.id || null;
             super.updatePirateShip(dt);
         }
-        super.updateProjectiles(dt);
+        this.updateProjectiles(dt);
         this.advanceCannonballs(dt);
         const gunner = this.players.get(this.pilotId) || this.nearest(this.pirateShip);
         if (gunner) this.usePlayer(gunner);
         else this.activePlayer = null;
         this.pirateCannonPose(true);
+        this.checkWinner();
+    }
+
+    firstPlayerHit(shot, x, y) {
+        let hit = null;
+        for (const p of this.players.values()) {
+            if (!this.alive(p) || p.id === shot.shooter || shot.hitTargets?.includes('player-' + p.id)) continue;
+            const t = this.segmentHit(shot.x, shot.y, x, y, { ...p.pose, state: 'player' });
+            if (t !== null && (!hit || t < hit.t)) hit = { player: p, t };
+        }
+        return hit;
+    }
+
+    damagePlayer(player, damage, cause, shooter) {
+        if (!this.alive(player)) return;
+        this.usePlayer(player);
+        this.health = Math.max(0, this.health - damage);
+        this.blood.push({ x: player.pose.x, y: player.pose.y, life: this.bloodLifetime });
+        if (!this.health) this.finishRun(shooter ? cause + ' by Rider ' + shooter.slice(0, 4) : cause);
+        this.savePlayer();
+        if (player.gameOver) { player.pose.vx = player.pose.vy = 0; player.controls = { x: 0, y: 0 }; }
+    }
+
+    updateProjectiles(dt) {
+        this.fireworkBursts = this.fireworkBursts.filter(burst => this.time - burst.startedAt < burst.duration);
+        for (const shot of this.projectiles) {
+            if (shot.type === 'firecracker') { this.updateFirecracker(shot, dt); continue; }
+            const travel = Math.min(dt, shot.life), x = shot.x + shot.vx * travel, y = shot.y + shot.vy * travel;
+            let nearest = Infinity, hit = null, kind = '';
+            for (const shark of this.sharks) {
+                if (shark.state === 'dead') continue;
+                const t = this.segmentHit(shot.x, shot.y, x, y, shark);
+                if (t !== null && t < nearest) { nearest = t; hit = shark; kind = 'shark'; }
+            }
+            const shipHit = this.pirateShip.disarmed ? null : this.pirateHullHit(shot.x, shot.y, x, y);
+            if (shipHit !== null && shipHit < nearest) { nearest = shipHit; hit = this.pirateShip; kind = 'ship'; }
+            const playerHit = this.firstPlayerHit(shot, x, y);
+            if (playerHit && playerHit.t < nearest) { hit = playerHit.player; kind = 'player'; }
+            if (hit) {
+                if (kind === 'player') this.damagePlayer(hit, 25, 'Spear hit', shot.shooter);
+                else if (kind === 'ship') this.damagePirateShip();
+                else this.damageShark(hit);
+                shot.life = 0;
+            } else { shot.x = x; shot.y = y; shot.life -= dt; }
+        }
+        this.projectiles = this.projectiles.filter(s => s.life > 0 && s.x >= 0 && s.x <= 6000 && s.y >= 0 && s.y <= 4000);
+    }
+
+    firecrackerImpact(shot) {
+        super.firecrackerImpact(shot);
+        for (const p of this.players.values()) {
+            const key = 'player-' + p.id;
+            if (!this.alive(p) || p.id === shot.shooter || shot.hitTargets.includes(key) ||
+                Math.hypot(p.pose.x - shot.x, p.pose.y - shot.y) > 80) continue;
+            shot.hitTargets.push(key);
+            this.damagePlayer(p, 25, 'Firecracker hit', shot.shooter);
+        }
+    }
+
+    updateFirecracker(shot, dt) {
+        let remaining = Math.min(dt, shot.life);
+        for (let step = 0; step < 6 && remaining > 1e-8 && shot.life > 0; step++) {
+            const travel = Math.min(remaining, shot.hopRemaining);
+            const x = shot.x + shot.vx * travel, y = shot.y + shot.vy * travel;
+            let hit = this.firstPlayerHit(shot, x, y)?.t ?? null;
+            for (const shark of this.sharks) {
+                if (shark.state === 'dead' || shot.hitTargets.includes('shark-' + shark.id)) continue;
+                const t = this.segmentHit(shot.x, shot.y, x, y, shark);
+                if (t !== null && (hit === null || t < hit)) hit = t;
+            }
+            if (!this.pirateShip.disarmed && !shot.hitTargets.includes('pirate')) {
+                const t = this.pirateHullHit(shot.x, shot.y, x, y);
+                if (t !== null && (hit === null || t < hit)) hit = t;
+            }
+            const elapsed = travel * (hit ?? 1);
+            shot.x += shot.vx * elapsed; shot.y += shot.vy * elapsed;
+            shot.life -= elapsed; remaining -= elapsed; shot.hopRemaining -= elapsed;
+            if (hit !== null || shot.hopRemaining <= 1e-8) {
+                this.firecrackerImpact(shot); shot.impacts++;
+                if (shot.impacts >= 3 || this.pointOnLand(shot.x, shot.y)) { shot.life = 0; break; }
+                shot.hopRemaining = 0.42;
+            }
+        }
     }
 
     advanceCannonballs(dt) {
         for (const ball of this.cannonballs) {
-            const travel = Math.min(dt, ball.life);
-            const x = ball.x + ball.vx * travel, y = ball.y + ball.vy * travel;
-            let nearest = Infinity, hit = null;
+            const travel = Math.min(dt, ball.life), x = ball.x + ball.vx * travel, y = ball.y + ball.vy * travel;
+            let nearest = Infinity, hit = null, kind = '';
             if (ball.owner === 'player') {
                 for (const shark of this.sharks) {
                     if (shark.state === 'dead') continue;
                     const t = this.segmentHit(ball.x, ball.y, x, y, shark);
-                    if (t !== null && t < nearest) { nearest = t; hit = shark; }
+                    if (t !== null && t < nearest) { nearest = t; hit = shark; kind = 'shark'; }
                 }
-                if (hit) { this.damageShark(hit, hit.maxHealth); ball.life = 0; }
-            } else {
-                for (const p of this.players.values()) {
-                    if (p.gameOver) continue;
-                    const t = this.segmentHit(ball.x, ball.y, x, y, { ...p.pose, state: 'chase' });
-                    if (t !== null && t < nearest) { nearest = t; hit = p; }
-                }
-                if (hit) {
-                    this.usePlayer(hit); this.health = Math.max(0, this.health - 75);
-                    if (!this.health) this.finishRun('Cannonball Attack');
-                    this.savePlayer(); ball.life = 0;
-                }
+            }
+            const playerHit = this.firstPlayerHit(ball, x, y);
+            if (playerHit && playerHit.t < nearest) { hit = playerHit.player; kind = 'player'; }
+            if (hit) {
+                if (kind === 'shark') this.damageShark(hit, hit.maxHealth);
+                else this.damagePlayer(hit, 75, 'Cannonball hit', ball.shooter);
+                ball.life = 0;
             }
             ball.x = x; ball.y = y; ball.life -= dt;
         }
-        this.cannonballs = this.cannonballs.filter(ball => ball.life > 0 && ball.x >= -100 && ball.x <= 6100 && ball.y >= -100 && ball.y <= 4100);
+        this.cannonballs = this.cannonballs.filter(b => b.life > 0 && b.x >= -100 && b.x <= 6100 && b.y >= -100 && b.y <= 4100);
     }
 
     snapshot() {
         for (const entity of [...this.projectiles, ...this.cannonballs]) entity.id ??= this.nextEntityId++;
-        return { protocol: 3, phase: this.phase, hostId: this.hostId, tick: this.tickNumber, time: this.time,
+        return { protocol: 4, phase: this.phase, hostId: this.hostId, round: this.roundNumber, result: this.result,
+            aliveCount: [...this.participants].filter(id => this.alive(this.players.get(id))).length, tick: this.tickNumber, time: this.time,
             sharks: this.sharks.map(visibleEntity), pirateShip: visibleEntity(this.pirateShip),
             pilotId: this.pilotId, projectiles: this.projectiles, cannonballs: this.cannonballs,
-            blood: this.blood, guns: this.floatingGuns,
+            blood: this.blood, guns: this.floatingGuns, loot: this.loot, fireworkBursts: this.fireworkBursts,
             coconuts: this.islands.map(island => island.coconuts.map(c => c.id)),
             chests: this.islands.map(island => (island.chests || []).map(({ id, opened }) => ({ id, opened }))) };
     }

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Multiplayer — Ocean Rush</title>
-    <link rel="stylesheet" href="style.css?v=host-start-37">
+    <link rel="stylesheet" href="style.css?v=pvp-rounds-40">
 </head>
 <body class="lobby-screen">
     <main class="multiplayer-lobby">
@@ -14,12 +14,13 @@
         <div class="lobby-options">
             <form action="game.html" method="get" class="lobby-card">
                 <h2>Host a room</h2>
-                <p>Create a room and share the code shown at the bottom of your game.</p>
+                <p>Create a room and invite another rider. The host starts the round; the last rider standing wins.</p>
                 <input type="hidden" name="action" value="host">
                 <button type="submit">Host Room</button>
             </form>
             <form action="game.html" method="get" class="lobby-card">
                 <h2>Join a room</h2>
+                <p>Join before the start to play, or watch a running round until the next one.</p>
                 <label for="joinCode">Four-letter room code</label>
                 <input id="joinCode" name="room" placeholder="ABCD" minlength="4" maxlength="4" pattern="[A-Za-z]{4}" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
                 <button type="submit">Join Room</button>
@@ -27,6 +28,6 @@
         </div>
         <a href="index.html">Back to home</a>
     </main>
-    <script src="scripts/lobby.js?v=host-start-37"></script>
+    <script src="scripts/lobby.js?v=pvp-rounds-40"></script>
 </body>
 </html>

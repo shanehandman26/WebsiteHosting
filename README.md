@@ -247,7 +247,8 @@ Singleplayer does not open a relay connection.
 
 
 Rooms open in a **waiting lobby**. Only the current host sees **Start Game**;
-the server rejects start requests from other players. Movement, pickups,
+the server rejects start requests from other players. At least two connected
+players are required to start. Movement, pickups,
 combat, enemies, and the safe-area timer stay paused until the host starts.
 If the host leaves, the next connected player becomes host. Starting twice
 does not restart the match.
@@ -255,13 +256,13 @@ does not restart the match.
 At the start, all connected players receive separate open-water spawns spread
 across the map. Spawn selection checks island clearance, enemy proximity, and
 distance from other players, and keeps spawns inside the final safe area.
-Late joiners enter the running match at another separated location; individual
-respawns also use safe separated positions. The room code stays visible while
+Late joiners watch as spectators until the next round. Eliminated players
+cannot respawn or rejoin alive in a running round. The room code stays visible while
 waiting and during gameplay, including in fullscreen.
 
 The minimap shows your cyan direction marker and **green dots for other living
 players**, even when they are far outside your view. Dead or disconnected riders
-are removed; respawned riders appear again. These positions use the same
+are removed. Spectators follow a living rider without a phantom marker of their own. These positions use the same
 smoothed player updates as the ocean view.
 
 Shared rooms require the updated public files, `server/relay.cjs`, and
@@ -275,7 +276,8 @@ polygons once, and every device receives those exact polygons for drawing,
 shorelines, walking, and collisions. Sharks, pirate position and attacks, blood,
 projectiles, enemy health, kills, and shark respawns are shared. A late joiner
 receives the current world, including defeated enemies and collected pickups.
-The simulation continues if the host leaves and another player remains.
+The simulation continues if the host leaves and at least two contestants remain.
+Disconnecting counts as elimination; the last surviving contestant wins.
 
 Sharks target the nearest living rider who is not protected aboard the pirate
 ship. Normal detection uses a fixed 900-pixel radius; fresh blood extends it to
@@ -284,21 +286,48 @@ These room-wide distances replace viewport-dependent detection in multiplayer,
 so a different screen size cannot change enemy behavior. Singleplayer keeps its
 existing rules. Sharks still respawn after ten seconds; sixteen spear hits
 disarm the pirate ship, which can then have **one pilot at a time**. Captured
-ship movement and cannon fire are shared. Player weapons do not damage players.
+ship movement and cannon fire are shared. Player weapons now damage other
+players, including a **driver aboard the captured pirate ship**. The driver
+retains the existing shark protection, but has no immunity to player weapons.
+
+### Elimination rounds and player weapons
+
+Spear hits remove **25 health** and cannonballs remove **75 health**. Firecracker
+shots deal 25 health to each opposing player they hit, at most once per player
+across that shot's bounces. Shots cannot damage their shooter. The server checks
+weapons, ammunition, cooldowns, and swept collisions; a spear or cannonball hits
+only the first intersected target and is consumed. Nearby enemies can block a
+shot intended for a player. Player weapons work against riders on water, on
+islands, and driving the pirate ship.
+
+Every round begins with at least two players. Players who die from weapons,
+enemies, or the safe area are permanently eliminated for that round. Reset and
+respawn requests are rejected by the server. Eliminated players watch a living
+player; their connection stays in the room. Joining or reconnecting after the
+start enters spectator mode, so reconnecting cannot restore a contestant.
+
+Once only one contestant is alive, the server freezes the round and sends the
+same winner to everyone. The screen displays the winner's generated Rider label.
+If the last contestants die in the same simulation tick, the result is a draw.
+The result remains fixed even if the winner later disconnects.
+
+Only the current host can click **Next Round**, and two connected players are
+required. A new round resets health, inventory, weapons, enemies, pickups,
+chests, effects, and the timer for all connected players, including spectators.
+It keeps the same room code and island geometry and assigns new separated
+spawns. Host privileges transfer on disconnect, including to an eliminated
+player who can start the next round.
 
 Guns and coconuts are shared pickups: the server grants an item to only one
 player, removes it for everyone, checks inventory and firing cooldowns, and
 resolves damage once. Broken guns create one shared replacement. Coconut
-healing affects only the player who eats it. Guns carried when leaving or
-respawning return to the pickup pool; carried coconuts are lost.
+healing affects only the player who eats it. Guns carried when disconnecting return to the pickup pool; carried coconuts are lost.
 
-**Ride again** and **Reset rider** respawn only that player, clear their
-inventory, and restore health/boost with three seconds of shark protection.
-They do not regenerate islands or reset enemies, other players, or the shared
-safe-area clock. The room pauses while empty and expires after 60 seconds.
-Reconnecting enters the existing world as a fresh rider; persistent player
-identities and server-restart recovery are not implemented. Fish and wake are
-cosmetic local effects.
+Singleplayer retains **Ride again** and **Reset rider**. Multiplayer hides
+those buttons and never revives a player during an active round. Empty rooms
+expire after 60 seconds. Worlds and round results exist only in server memory;
+server restarts require hosting a new room. Fish and wake are cosmetic local
+effects.
 
 The browser connects directly to `wss://shaneh.api.codehw.net/multiplayer` from
 either the server-hosted game or Firebase Hosting. The public endpoint is in
@@ -312,7 +341,7 @@ and combat at 60 Hz and sends world snapshots at 20 Hz. Browsers interpolate
 enemy and projectile positions with a 75 ms buffer; other riders use a 50 ms
 buffer and at most 100 ms prediction. Server damage and pickup confirmations
 arrive over the network. Snapshots do not overwrite ordinary local steering;
-server-issued position revisions handle boarding, respawn, and corrections.
+server-issued position revisions handle boarding, new-round spawns, and corrections.
 Buffered stale movement is dropped, slow receivers reconnect, dead connections receive heartbeat checks,
 and clients retry with backoff. The status shows measured browser-to-relay
 **round-trip** time, not one-way latency or player-to-player delay. Physical

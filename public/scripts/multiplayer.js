@@ -5,6 +5,12 @@ class OceanMultiplayer {
         this.peers = new Map();
         this.ready = false;
         this.playing = false;
+        this.phase = 'waiting';
+        this.roundNumber = -1;
+        this.result = null;
+        this.aliveCount = 0;
+        this.spectating = false;
+        this.spectator = false;
         this.hostId = null;
         this.starting = false;
         this.worldTime = 0;
@@ -22,9 +28,17 @@ class OceanMultiplayer {
         this.waitingPanel = document.getElementById('roomWaiting');
         this.startButton = document.getElementById('startGameButton');
         this.startButton.addEventListener('click', () => {
-            if (this.id !== this.hostId || this.playing || !this.ready || this.starting) return;
+            if (this.id !== this.hostId || this.phase !== 'waiting' || !this.ready || this.starting || this.peers.size < 1) return;
             if (this.action('start')) { this.starting = true; this.syncLobby(); }
         });
+        this.resultPanel = document.getElementById('roundResult');
+        this.nextButton = document.getElementById('nextRoundButton');
+        this.nextButton.addEventListener('click', () => {
+            if (this.id !== this.hostId || this.phase !== 'finished' || !this.ready || this.starting || this.peers.size < 1) return;
+            if (this.action('next_round')) { this.starting = true; this.syncLobby(); }
+        });
+        document.getElementById('resetButton').hidden = true;
+        document.getElementById('restartButton').hidden = true;
         document.getElementById('roomLobbyLink').hidden = false;
         this.retry = 500;
         this.closed = false;
@@ -80,7 +94,7 @@ class OceanMultiplayer {
                 url.searchParams.set('room', code); url.searchParams.delete('action');
                 window.history?.replaceState(null, '', url.href);
                 this.id = msg.id;
-                if (msg.protocol !== 3 || !msg.world || !msg.layout || !msg.you) {
+                if (msg.protocol !== 4 || !msg.world || !msg.layout || !msg.you) {
                     this.failRoom('This room needs the shared-world server update. Refresh after the update.');
                     return;
                 }
@@ -150,7 +164,7 @@ class OceanMultiplayer {
         const now = performance.now();
         if (now - this.lastPong > 12000) { this.socket.close(); return; }
         const g = this.game;
-        if (this.playing) {
+        if (this.playing && !this.spectating) {
             const aimAngle = g.onPirateShip ? g.pirateCannonPose(true).angle : (g.aimAngle?.() ?? g.rider.angle - Math.PI / 2);
             this.send({ type: 'state', revision: this.poseRevision, slot: g.selectedSlot, controls: { ...this.controls, aimAngle }, state: { ...g.rider, onFoot: g.onFoot,
                 onPirateShip: g.onPirateShip, boosting: g.boosting, dead: g.gameOver } });
@@ -163,7 +177,8 @@ class OceanMultiplayer {
 
     action(action, values = {}) {
         if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) return false;
-        if (action !== 'start' && !this.playing) return false;
+        if (action === 'respawn') return false;
+        if (!['start', 'next_round'].includes(action) && (!this.playing || this.spectating)) return false;
         this.tick();
         this.send({ type: 'action', action, slot: this.game.selectedSlot, ...values });
         return true;
@@ -198,6 +213,8 @@ class OceanMultiplayer {
             g.islandCollision = null;
             g.updateCamera();
         }
+        this.spectator = you.spectator === true;
+        this.spectating = this.spectator || you.dead;
         g.health = you.health;
         g.inventory = you.inventory;
         if (selection) g.selectedSlot = you.selectedSlot;
@@ -210,12 +227,19 @@ class OceanMultiplayer {
         g.survivalSeconds = you.survivalSeconds;
         if (you.dead && !g.gameOver) g.finishRun(you.cause);
         else if (!you.dead) { g.gameOver = false; g.gameOverPanel.hidden = true; }
+        g.gameOverPanel.hidden = true;
+        if (this.spectating) g.muzzleFlash = null;
         g.updateInventory(); g.updateHealthDisplay(); g.updatePickupPrompt();
     }
 
     receiveWorld(world, now) {
         const g = this.game;
         const wasPlaying = this.playing;
+        const newRound = world.round !== this.roundNumber;
+        if (newRound) { this.roundNumber = world.round; this.worldSamples = []; this.peers.clear(); }
+        this.phase = world.phase;
+        this.result = world.result;
+        this.aliveCount = world.aliveCount || 0;
         this.playing = world.phase === 'running';
         this.hostId = world.hostId;
         if (this.playing !== wasPlaying) { this.worldSamples = []; this.starting = false; }
@@ -224,6 +248,8 @@ class OceanMultiplayer {
         this.worldSamples.push({ ...world, at: now });
         if (this.worldSamples.length > 6) this.worldSamples.shift();
         g.floatingGuns = world.guns;
+        g.loot = world.loot || [];
+        g.fireworkBursts = world.fireworkBursts || [];
         for (let i = 0; i < g.islands.length; i++) {
             const remaining = new Set(world.coconuts[i]);
             g.islands[i].coconuts = this.layout[i].coconuts.filter(c => remaining.has(c.id));
@@ -268,23 +294,50 @@ class OceanMultiplayer {
         g.cannonballs = entities(a.cannonballs, b.cannonballs);
         g.time = a.time + (b.time - a.time) * t;
         this.worldTime = this.worldSamples.at(-1).time;
+        if (this.spectating) {
+            const alive = [...this.peers].filter(([, peer]) => !peer.state.dead && !peer.state.spectator);
+            const target = alive.find(([id]) => id === this.watchId) || alive[0];
+            if (target) {
+                this.watchId = target[0];
+                Object.assign(g.rider, this.position(target[1], now));
+                g.onFoot = false; g.onPirateShip = false; g.parkedBoat = null; g.walkIsland = null;
+                g.updateCamera();
+            }
+        }
     }
 
     updateStatus() {
-        this.status.textContent = `${this.peers.size + 1} RIDERS · ${this.rtt === null ? '…' : this.rtt + ' MS RTT'} · ${this.room.toUpperCase()}`;
+        const label = this.phase === 'running' ? this.aliveCount + ' LEFT' : this.phase === 'finished' ? 'ROUND OVER' : (this.peers.size + 1) + ' RIDERS';
+        this.status.textContent = `${label} · ${this.rtt === null ? '…' : this.rtt + ' MS RTT'} · ${this.room.toUpperCase()}`;
     }
 
     syncLobby() {
-        this.waitingPanel.hidden = !this.ready || this.playing;
+        this.waitingPanel.hidden = !this.ready || this.phase !== 'waiting';
         this.startButton.hidden = this.id !== this.hostId;
-        this.startButton.disabled = !this.ready || this.starting;
+        this.startButton.disabled = !this.ready || this.starting || this.peers.size < 1;
         this.startButton.textContent = this.starting ? 'Starting…' : 'Start Game';
         const count = document.getElementById('waitingPlayers');
         const text = `${this.peers.size + 1} ${(this.peers.size + 1) === 1 ? 'rider' : 'riders'} connected`;
         if (count.textContent !== text) count.textContent = text;
         document.getElementById('waitingMessage').textContent = this.id === this.hostId ?
-            'Start when everyone has joined. Players will spawn across the ocean.' : 'Waiting for the host to start the game.';
-        document.getElementById('minimapLegend').hidden = !this.playing;
+            (this.peers.size < 1 ? 'Invite another player. At least two players are needed.' : 'Start when everyone has joined. Last rider standing wins.') : 'Waiting for the host to start the game.';
+        const legend = document.getElementById('minimapLegend');
+        legend.hidden = !this.playing;
+        legend.textContent = this.spectating ? 'Green: surviving riders' : 'Cyan: you · Green: riders';
+        this.resultPanel.hidden = !this.ready || this.phase !== 'finished';
+        this.nextButton.hidden = this.id !== this.hostId;
+        this.nextButton.disabled = !this.ready || this.starting || this.peers.size < 1;
+        this.nextButton.textContent = this.starting ? 'Starting…' : 'Next Round';
+        const winner = document.getElementById('roundWinner');
+        const title = this.result?.winnerId ? this.result.winnerLabel + ' wins!' : 'Round drawn';
+        if (winner.textContent !== title) winner.textContent = title;
+        document.getElementById('roundResultMessage').textContent = this.id === this.hostId ?
+            (this.peers.size < 1 ? 'Invite another player to play again.' : 'Start a new round when everyone is ready.') : 'Waiting for the host to start the next round.';
+        const banner = document.getElementById('spectatorBanner');
+        banner.hidden = !this.ready || !this.playing || !this.spectating;
+        const bannerText = `${this.spectator ? 'SPECTATING' : 'ELIMINATED'} · ${this.aliveCount} riders left`;
+        if (banner.textContent !== bannerText) banner.textContent = bannerText;
+        this.game.gameOverPanel.hidden = true;
     }
 
     minimapPlayers() {

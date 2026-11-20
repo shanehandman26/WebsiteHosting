@@ -120,7 +120,7 @@ function createRelay() {
         if (world) world.addPlayer(ws.id);
         const broadcast = message => { for (const peer of peers) if (peer !== ws) send(peer, message); };
         send(ws, { type: 'welcome', id: ws.id, room,
-            ...(world ? { protocol: 3, layout: world.layout, world: world.snapshot(), you: world.personal(ws.id) } : {}),
+            ...(world ? { protocol: 4, layout: world.layout, world: world.snapshot(), you: world.personal(ws.id) } : {}),
             players: [...peers].filter(p => p !== ws && (p.state || world)).map(p => ({ id: p.id,
                 state: world ? world.stateFor(world.players.get(p.id)) : p.state })) });
         ws.on('pong', () => { ws.alive = true; });

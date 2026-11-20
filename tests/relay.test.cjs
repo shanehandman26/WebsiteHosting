@@ -69,12 +69,12 @@ test('a hosted room admits sixteen simultaneous players and refuses a seventeent
     for (const update of await Promise.all(deliveries)) assert.equal(update.id, host.welcome.id);
 });
 
-test('host, guests and late joiners receive one current world and player respawns preserve it', async t => {
+test('host, guests and late joiners receive one current world and reset requests cannot revive players', async t => {
     const f = await fixture(t);
     const host = await f.connectRequest('action=host');
     const code = host.welcome.room;
     const guest = await f.connectRequest('action=join&room=' + code);
-    assert.equal(host.welcome.protocol, 3);
+    assert.equal(host.welcome.protocol, 4);
     assert.deepEqual(guest.welcome.layout, host.welcome.layout);
     const world = f.rooms.get(code).world;
     world.start(host.welcome.id);
@@ -100,12 +100,13 @@ test('host, guests and late joiners receive one current world and player respawn
     assert.equal((await fired).you.inventory[0].durability, 11);
     assert.equal(gun.durability, 11);
     world.time += 0.21;
-    const respawned = message(host.ws, 'personal');
     host.ws.send(JSON.stringify({ type: 'action', action: 'respawn' }));
-    const response = await respawned;
-    assert.equal(response.you.generation, 2);
+    const barrier = message(host.ws, 'pong');
+    host.ws.send(JSON.stringify({ type: 'ping', at: 10 })); await barrier;
+    const response = await message(host.ws, 'world');
+    assert.equal(response.you.generation, 1);
     assert.equal(response.you.health, 100);
-    assert.equal(response.you.inventory.filter(Boolean).length, 0);
+    assert.equal(response.you.inventory.filter(Boolean).length, 1);
     assert.equal(world.sharks[0].health, 1);
     assert.equal(world.pirateShip.hits, 7);
     assert.equal(world.players.get(guest.welcome.id).generation, 1);
@@ -132,7 +133,44 @@ test('network lobby stays paused until the host starts, then broadcasts scattere
     assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 500);
     const late = await f.connectRequest('action=join&room=' + code);
     assert.equal(late.welcome.world.phase, 'running');
-    assert.ok(Math.hypot(late.welcome.you.x - a.x, late.welcome.you.y - a.y) >= 500);
+    assert.equal(late.welcome.you.spectator, true);
+    assert.equal(late.welcome.you.dead, true);
+});
+
+test('network PvP eliminates without respawn, broadcasts one winner, and permits only the host to start again', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const code = host.welcome.room;
+    const guest = await f.connectRequest('action=join&room=' + code);
+    const world = f.rooms.get(code).world;
+    world.start(host.welcome.id);
+    const a = world.players.get(host.welcome.id), b = world.players.get(guest.welcome.id);
+    world.islands = []; world.sharks = [];
+    Object.assign(world.pirateShip, { x: 500, y: 500 });
+    Object.assign(a.pose, { x: 3000, y: 2000 }); Object.assign(b.pose, { x: 3100, y: 2000 });
+    b.health = 25;
+    a.inventory[0] = { id: 'pvp-gun', name: 'Spear gun', durability: 12 };
+    const fired = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'fire', slot: 0, angle: 0 }));
+    assert.equal((await fired).you.inventory[0].durability, 11);
+    let finished;
+    for (let i = 0; i < 10; i++) { finished = await message(guest.ws, 'world'); if (finished.world.phase === 'finished') break; }
+    assert.equal(finished.world.phase, 'finished'); assert.equal(finished.you.dead, true);
+    assert.equal(finished.world.result.winnerId, host.welcome.id);
+    guest.ws.send(JSON.stringify({ type: 'action', action: 'respawn' }));
+    guest.ws.send(JSON.stringify({ type: 'action', action: 'next_round' }));
+    const barrier = message(guest.ws, 'pong'); guest.ws.send(JSON.stringify({ type: 'ping', at: 12 })); await barrier;
+    assert.equal(world.phase, 'finished'); assert.equal(b.health, 0);
+    const late = await f.connectRequest('action=join&room=' + code);
+    assert.equal(late.welcome.you.spectator, true); assert.equal(late.welcome.you.dead, true);
+    assert.equal(late.welcome.world.result.winnerId, host.welcome.id);
+    const next = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'next_round' }));
+    assert.equal((await next).you.generation, 2);
+    const fresh = await message(guest.ws, 'world');
+    assert.equal(fresh.world.round, 2); assert.equal(fresh.world.phase, 'running'); assert.equal(fresh.world.result, null);
+    assert.equal(fresh.you.health, 100); assert.equal(fresh.you.dead, false);
+    assert.equal(world.players.get(late.welcome.id).spectator, false);
 });
 
 test('relay forwards movement and shots, separates rooms, and reports disconnects', async t => {
