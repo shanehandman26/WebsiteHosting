@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function setup({ islands = false } = {}) {
+function setup({ islands = false, room = '', search, storage = new Map() } = {}) {
     const buttons = {};
     const listeners = {};
     let drawDepth = 0;
@@ -31,9 +31,11 @@ function setup({ islands = false } = {}) {
             getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 330 }),
             addEventListener: (event, callback) => { buttons['canvas:' + event] = callback; }
         },
+        minimapCanvas: { width: 240, height: 160, getContext: () => context },
         oceanScreen: { classList: classList(), getBoundingClientRect: () => ({ width: 1200, height: 660 }) },
         speed: {}, boostBar: {}, boostAmount: {}, boostStatus: {},
         healthBar: {}, healthAmount: {}, gameOver: { hidden: true }, deathCause: {},
+        survivalHud: { hidden: true }, survivalTime: {}, bestSurvival: {}, gameOverTime: {},
         inventoryCount: {}, pickupPrompt: { hidden: true }
     };
     for (let i = 1; i <= 6; i++) {
@@ -55,9 +57,13 @@ function setup({ islands = false } = {}) {
         hidden: false, getElementById: id => elements[id],
         addEventListener: (event, callback) => { listeners[event] = callback; }
     };
-    const window = { addEventListener: (event, callback) => { listeners[event] = callback; } };
+    const window = {
+        location: { search: search ?? (room ? '?room=' + room : '') },
+        localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+        addEventListener: (event, callback) => { listeners[event] = callback; }
+    };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../public/scripts/game.js'), 'utf8'), {
-        document, window, console, requestAnimationFrame() {}
+        document, window, console, URLSearchParams, requestAnimationFrame() {}
     }, { importModuleDynamically: async () => { throw new Error('Offline analytics test'); } });
     const game = document.myGame;
     // Keep obstacle-free fixtures for focused existing mechanics; island tests opt in.
@@ -66,7 +72,7 @@ function setup({ islands = false } = {}) {
         game.createIslands = () => [];
     }
     return {
-        game, elements, buttons, listeners, document,
+        game, elements, buttons, listeners, document, window,
         drawDepth: () => drawDepth, drawCalls,
         advance(seconds) { for (let i = 0; i < Math.round(seconds * 120); i++) game.step(1 / 120); },
         shark(x = 3100, y = 2000) {
@@ -79,6 +85,213 @@ function setup({ islands = false } = {}) {
         }
     };
 }
+
+test('singleplayer survival timer counts while alive, resets each round, and preserves the best time', () => {
+    const storage = new Map();
+    const fixture = setup({ storage });
+    const { game, elements } = fixture;
+    game.sharks = []; game.updatePirateShip = () => {};
+    assert.equal(elements.survivalHud.hidden, false);
+    assert.equal(elements.survivalTime.textContent, '00:00');
+    fixture.advance(1.5);
+    assert.equal(elements.survivalTime.textContent, '00:01');
+    assert.equal(elements.bestSurvival.textContent, '00:01');
+    assert.equal(storage.get('ocean-rush-best-survival'), '1');
+    game.reset();
+    assert.equal(elements.survivalTime.textContent, '00:00');
+    assert.equal(elements.bestSurvival.textContent, '00:01');
+    assert.equal(game.survivalSeconds, 0);
+});
+
+test('survival timer stops at death from either sharks or cannonballs', () => {
+    for (const cause of ['shark', 'cannon']) {
+        const fixture = setup();
+        const { game, elements } = fixture;
+        game.sharks = []; game.updatePirateShip = () => {};
+        fixture.advance(5.25);
+        if (cause === 'shark') { game.health = 25; game.takeBite(); }
+        else {
+            game.health = 75;
+            game.cannonballs = [{ x: game.rider.x, y: game.rider.y, vx: 0, vy: 0, life: 1 }];
+            game.updateCannonballs(0.01);
+        }
+        assert.equal(game.gameOver, true);
+        const elapsed = game.survivalSeconds;
+        fixture.advance(2);
+        assert.equal(game.survivalSeconds, elapsed);
+        assert.equal(elements.survivalTime.textContent, '00:05');
+        assert.equal(elements.bestSurvival.textContent, '00:05');
+        assert.equal(elements.gameOverTime.textContent, 'Survived 00:05');
+        game.reset();
+        assert.equal(elements.gameOverTime.textContent, '');
+    }
+});
+
+test('survival best persists across reloads, formats minutes, and cannot be replaced by a shorter run', () => {
+    const storage = new Map();
+    const first = setup({ storage });
+    first.game.sharks = []; first.game.updatePirateShip = () => {};
+    first.game.step(65);
+    assert.equal(first.elements.survivalTime.textContent, '01:05');
+    assert.equal(first.elements.bestSurvival.textContent, '01:05');
+    const next = setup({ storage });
+    next.game.sharks = []; next.game.updatePirateShip = () => {};
+    assert.equal(next.elements.survivalTime.textContent, '00:00');
+    assert.equal(next.elements.bestSurvival.textContent, '01:05');
+    next.advance(2);
+    assert.equal(next.elements.bestSurvival.textContent, '01:05');
+    assert.equal(storage.get('ocean-rush-best-survival'), '65');
+});
+
+test('hosting uses multiplayer mode before the server assigns its room code', () => {
+    const { game, elements } = setup({ search: '?action=host' });
+    assert.equal(game.isSingleplayer, false);
+    assert.equal(elements.survivalHud.hidden, true);
+});
+
+test('multiplayer hides the timer and does not change the singleplayer survival record', () => {
+    const storage = new Map([['ocean-rush-best-survival', '12']]);
+    const { game, elements } = setup({ room: 'crew', storage });
+    game.sharks = []; game.updatePirateShip = () => {};
+    game.step(20);
+    assert.equal(elements.survivalHud.hidden, true);
+    assert.equal(game.survivalSeconds, 20);
+    assert.equal(storage.get('ocean-rush-best-survival'), '12');
+});
+
+test('invalid or blocked browser storage cannot break survival timing', () => {
+    for (const saved of ['not-a-number', '-10', 'Infinity']) {
+        const fixture = setup({ storage: new Map([['ocean-rush-best-survival', saved]]) });
+        assert.equal(fixture.elements.bestSurvival.textContent, '00:00');
+    }
+    const fixture = setup({ storage: { get() { throw new Error('Blocked'); }, set() { throw new Error('Blocked'); } } });
+    fixture.game.sharks = []; fixture.game.updatePirateShip = () => {};
+    fixture.advance(1.5);
+    assert.equal(fixture.elements.survivalTime.textContent, '00:01');
+    assert.equal(fixture.elements.bestSurvival.textContent, '00:01');
+    fixture.game.reset();
+    assert.equal(fixture.elements.bestSurvival.textContent, '00:01');
+});
+
+test('caught messages include the final time in either mode without changing multiplayer high scores', () => {
+    for (const room of ['', 'crew']) {
+        const storage = new Map([['ocean-rush-best-survival', '12']]);
+        const fixture = setup({ room, storage });
+        const { game, elements } = fixture;
+        game.sharks = []; game.updatePirateShip = () => {};
+        game.step(65.25);
+        game.health = 25; game.takeBite();
+        assert.equal(elements.gameOverTime.textContent, 'Survived 01:05');
+        assert.equal(elements.deathCause.textContent, 'Shark Attack');
+        assert.equal(storage.get('ocean-rush-best-survival'), room ? '12' : '65');
+        fixture.advance(2);
+        assert.equal(elements.gameOverTime.textContent, 'Survived 01:05');
+    }
+});
+
+test('minimap omits islands while scaling player, pirate ship, and camera view without changing gameplay state', () => {
+    const fixture = setup();
+    const { game, drawCalls } = fixture;
+    game.islands = [{ x: 1000, y: 1000, radius: 150, points: [[-100, -100], [100, -100], [0, 100]] }];
+    Object.assign(game.rider, { x: 5000, y: 3000 });
+    Object.assign(game.pirateShip, { x: 4500, y: 2500 });
+    game.updateCamera();
+    const before = JSON.stringify({ rider: game.rider, ship: game.pirateShip, camera: game.camera });
+    game.drawMinimap();
+    assert.equal(drawCalls.some(call => call.method === 'moveTo' && call.args[0] === 36 && call.args[1] === 36), false);
+    assert.equal(drawCalls.some(call => call.fillStyle === '#c887e8'), false);
+    assert.ok(drawCalls.some(call => call.method === 'translate' && call.args[0] === 180 && call.args[1] === 100));
+    assert.ok(drawCalls.some(call => call.method === 'translate' && call.args[0] === 200 && call.args[1] === 120));
+    assert.ok(drawCalls.some(call => call.method === 'strokeRect' && call.args[2] === 48 && call.args[3] === 26.400000000000002));
+    assert.equal(JSON.stringify({ rider: game.rider, ship: game.pirateShip, camera: game.camera }), before);
+    assert.equal(fixture.drawDepth(), 0);
+    drawCalls.length = 0;
+    game.canvas.width = 2000;
+    game.updateCamera(); game.drawMinimap();
+    assert.ok(drawCalls.some(call => call.method === 'strokeRect' && call.args[2] === 80));
+    assert.equal(game.minimapCanvas.width, 240);
+    assert.equal(game.minimapCanvas.height, 160);
+    assert.equal(fixture.drawDepth(), 0);
+});
+
+test('safe area shrinks to four by four standard screens over three minutes and never gets smaller', () => {
+    const { game } = setup();
+    let area = game.safeAreaBounds();
+    assert.equal(area.x, 0); assert.equal(area.y, 0);
+    assert.equal(area.width, 6000); assert.equal(area.height, 4000);
+    game.survivalSeconds = 90; area = game.safeAreaBounds();
+    assert.equal(area.width, 5400); assert.equal(area.height, 3320);
+    assert.equal(area.x, 300); assert.equal(area.y, 340);
+    game.survivalSeconds = 180; area = game.safeAreaBounds();
+    assert.equal(area.width, 4800); assert.equal(area.height, 2640);
+    assert.equal(area.x, 600); assert.equal(area.y, 680);
+    game.survivalSeconds = 600; game.canvas.width = 2400;
+    assert.equal(JSON.stringify(game.safeAreaBounds()), JSON.stringify(area));
+    game.reset();
+    assert.equal(game.safeAreaBounds().width, 6000);
+    assert.equal(game.safeAreaBounds().height, 4000);
+    assert.equal(game.zoneDamageCarry, 0);
+});
+
+test('outside-zone damage is two health per second, stops inside, and reports a lethal exposure', () => {
+    const fixture = setup();
+    const { game, elements } = fixture;
+    game.sharks = []; game.updatePirateShip = () => {};
+    game.survivalSeconds = 180;
+    Object.assign(game.rider, { x: 100, y: 100 });
+    game.invulnerable = 100;
+    fixture.advance(1); assert.equal(game.health, 98);
+    fixture.advance(2); assert.equal(game.health, 94);
+    Object.assign(game.rider, { x: 600, y: 680 });
+    fixture.advance(0.5); assert.equal(game.health, 94, 'Safe boundary counts as inside');
+    Object.assign(game.rider, { x: 100, y: 100 }); game.health = 3;
+    fixture.advance(1.5);
+    assert.equal(game.health, 0); assert.equal(game.gameOver, true);
+    assert.equal(elements.deathCause.textContent, 'Outside Safe Area');
+    assert.equal(elements.gameOverTime.textContent, 'Survived 03:05');
+    const elapsed = game.survivalSeconds;
+    fixture.advance(1);
+    assert.equal(game.survivalSeconds, elapsed);
+});
+
+test('zone damage applies on islands and the pirate ship and resets partial damage on safe reentry', () => {
+    for (const mode of ['onFoot', 'onPirateShip']) {
+        const { game } = setup();
+        game[mode] = true; game.survivalSeconds = 180;
+        Object.assign(game.rider, { x: 100, y: 100 });
+        game.updateSafeArea(1);
+        assert.equal(game.health, 98);
+    }
+    const { game } = setup({ room: 'crew' });
+    game.survivalSeconds = 180;
+    Object.assign(game.rider, { x: 100, y: 100 });
+    game.updateSafeArea(0.1);
+    assert.equal(game.health, 100);
+    Object.assign(game.rider, { x: 3000, y: 2000 });
+    game.updateSafeArea(1);
+    assert.equal(game.zoneDamageCarry, 0);
+    Object.assign(game.rider, { x: 100, y: 100 });
+    game.updateSafeArea(0.1); assert.equal(game.health, 100);
+    game.updateSafeArea(0.4); assert.equal(game.health, 99);
+});
+
+test('minimap safe boundary shrinks at the same scale as the visible ocean boundary', () => {
+    const fixture = setup();
+    const { game, drawCalls } = fixture;
+    game.drawMinimap();
+    assert.ok(drawCalls.some(call => call.method === 'strokeRect' && call.args[2] === 240 && call.args[3] === 160));
+    drawCalls.length = 0;
+    game.survivalSeconds = 180;
+    game.drawMinimap();
+    assert.ok(drawCalls.some(call => call.method === 'strokeRect' &&
+        Math.abs(call.args[0] - 24) < 1e-6 && Math.abs(call.args[1] - 27.2) < 1e-6 &&
+        Math.abs(call.args[2] - 192) < 1e-6 && Math.abs(call.args[3] - 105.6) < 1e-6));
+    game.drawSafeArea(game.ctx);
+    assert.ok(drawCalls.some(call => call.method === 'strokeRect' && call.args[0] === 600 &&
+        call.args[1] === 680 && call.args[2] === 4800 && call.args[3] === 2640));
+    assert.ok(drawCalls.some(call => call.method === 'fillRect' && call.fillStyle === 'rgba(238, 48, 101, 0.22)' && call.args[3] > 0));
+    assert.equal(fixture.drawDepth(), 0);
+});
 
 test('ten sharks spawn in map, one in view, all safely away from rider', () => {
     const { game } = setup();
@@ -204,7 +417,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=relay-1'));
+        assert.ok(html.includes('game.js?v=room-codes-34'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }
@@ -1126,6 +1339,173 @@ function shoreSetup() {
     game.updateCamera(); game.updatePickupPrompt();
     return fixture;
 }
+
+function coconutSetup() {
+    const fixture = shoreSetup();
+    fixture.game.islands[0].coconuts = [{ id: 'coconut-test-1', x: -40, y: 0 }];
+    return fixture;
+}
+
+test('E collects nearby island coconuts into separate inventory slots without duplicate pickups', () => {
+    const fixture = coconutSetup();
+    const { game, elements } = fixture;
+    const island = game.islands[0];
+    island.coconuts.push({ id: 'coconut-test-2', x: -40, y: 1 });
+    fixture.key('e'); fixture.key('e', false);
+    assert.equal(game.onFoot, true);
+    assert.equal(elements.pickupPrompt.textContent, 'E · PICK UP COCONUT');
+    fixture.key('e');
+    assert.equal(game.onFoot, true, 'Nearby coconut takes priority over reboarding');
+    assert.equal(game.inventory[0].name, 'Coconut');
+    assert.equal(game.inventory[0].type, 'coconut');
+    assert.equal(island.coconuts.length, 1);
+    assert.equal(elements.inventoryItem1.src, 'assets/coconut.svg');
+    assert.equal(elements.inventoryItem1.alt, 'Coconut');
+    assert.equal(elements.inventoryDurability1.hidden, true);
+    fixture.key('e');
+    assert.equal(island.coconuts.length, 1, 'Holding E cannot repeat a pickup');
+    fixture.key('e', false); fixture.key('2'); fixture.key('e');
+    assert.equal(island.coconuts.length, 0);
+    assert.equal(game.inventory.filter(item => item?.type === 'coconut').length, 2);
+    assert.equal(new Set(game.inventory.filter(Boolean).map(item => item.id)).size, 2);
+    assert.equal(elements.inventoryCount.textContent, '2 / 6');
+});
+
+test('coconut pickups require being on foot on the island, within range, and alive', () => {
+    const fixture = coconutSetup();
+    const { game } = fixture;
+    Object.assign(game.rider, { x: 3160, y: 2000 });
+    assert.equal(game.pickUpCoconut(), false, 'A jet ski cannot collect coconuts');
+    game.walkIsland = game.islands[0]; game.onFoot = true;
+    game.rider.x = 3260;
+    assert.equal(game.pickUpCoconut(), false, 'Distant coconuts cannot be collected');
+    game.rider.x = 3160; game.gameOver = true;
+    assert.equal(game.pickUpCoconut(), false);
+    game.gameOver = false; game.rider.x = 3050;
+    assert.equal(game.pickUpCoconut(), false, 'On-foot state outside the island is insufficient');
+    assert.equal(game.islands[0].coconuts.length, 1);
+    assert.equal(game.inventory.every(item => item === null), true);
+});
+
+test('full inventory leaves coconuts on the island and still allows returning to the jet ski', () => {
+    const fixture = coconutSetup();
+    const { game, elements } = fixture;
+    fixture.key('e'); fixture.key('e', false);
+    game.inventory = Array.from({ length: 6 }, (_, i) => ({ id: 'full-' + i, name: 'Spear gun', durability: 12 }));
+    const items = game.inventory.slice();
+    game.rider.x = 3200;
+    game.updatePickupPrompt();
+    assert.equal(elements.pickupPrompt.textContent, 'INVENTORY FULL');
+    fixture.key('e'); fixture.key('e', false);
+    assert.equal(game.islands[0].coconuts.length, 1);
+    assert.equal(game.onFoot, true);
+    game.rider.x = 3124;
+    game.updatePickupPrompt();
+    assert.equal(elements.pickupPrompt.textContent, 'E · BOARD JET SKI');
+    fixture.key('e');
+    assert.equal(game.onFoot, false);
+    assert.equal(game.islands[0].coconuts.length, 1);
+    for (let i = 0; i < 6; i++) assert.equal(game.inventory[i], items[i]);
+});
+
+test('selecting a coconut neither fires nor draws a spear gun and the collected coconut stays gone', () => {
+    const fixture = coconutSetup();
+    const { game } = fixture;
+    fixture.key('e'); fixture.key('e', false); fixture.key('e');
+    let drawnGuns = 0;
+    game.drawGun = () => { drawnGuns++; };
+    game.aim.active = true;
+    game.draw();
+    assert.equal(drawnGuns, 0);
+    assert.equal(fixture.drawDepth(), 0);
+    assert.equal(game.fireGun(), false);
+    assert.equal(game.projectiles.length, 0);
+    assert.equal(game.islands[0].coconuts.length, 0);
+    assert.equal(game.inventory[0].type, 'coconut');
+    assert.ok(fs.readFileSync(path.join(__dirname, '../public/assets/coconut.svg'), 'utf8').includes('<svg'));
+});
+
+test('E eats the selected coconut once, restores twelve health, and frees its inventory slot', () => {
+    const fixture = coconutSetup();
+    const { game, elements } = fixture;
+    fixture.key('e'); fixture.key('e', false); fixture.key('e'); fixture.key('e', false);
+    game.health = 60;
+    assert.equal(elements.pickupPrompt.textContent, 'E · EAT COCONUT');
+    fixture.key('e');
+    assert.equal(game.health, 72);
+    assert.equal(elements.healthBar.value, 72);
+    assert.equal(game.inventory[0], null);
+    assert.equal(elements.inventoryItem1.hidden, true);
+    assert.equal(elements.inventoryCount.textContent, '0 / 6');
+    assert.equal(game.onFoot, true, 'Eating takes priority over reboarding');
+    assert.equal(game.islands[0].coconuts.length, 0);
+    fixture.key('e');
+    assert.equal(game.health, 72, 'Holding E cannot repeatedly heal');
+});
+
+test('coconut healing caps at full health and cannot revive a game-over player', () => {
+    const { game } = setup();
+    game.inventory[0] = { id: 'heal', type: 'coconut', name: 'Coconut' };
+    game.health = 95;
+    assert.equal(game.eatCoconut(), true);
+    assert.equal(game.health, 100);
+    assert.equal(game.inventory[0], null);
+    game.inventory[0] = { id: 'revive', type: 'coconut', name: 'Coconut' };
+    game.health = 0; game.gameOver = true;
+    assert.equal(game.eatCoconut(), false);
+    assert.equal(game.health, 0);
+    assert.equal(game.inventory[0].id, 'revive');
+});
+
+test('eating uses the selected slot and works on the jet ski and captured ship', () => {
+    const fixture = captureSetup();
+    const { game } = fixture;
+    game.inventory[1] = { id: 'snack-one', type: 'coconut', name: 'Coconut' };
+    game.health = 50;
+    fixture.key('2'); fixture.key('e'); fixture.key('e', false);
+    assert.equal(game.health, 62);
+    assert.equal(game.onPirateShip, false, 'Eating takes priority over boarding the nearby ship');
+    assert.equal(game.inventory[1], null);
+    fixture.key('1'); fixture.key('e'); fixture.key('e', false);
+    assert.equal(game.onPirateShip, true);
+    game.inventory[1] = { id: 'snack-two', type: 'coconut', name: 'Coconut' };
+    fixture.key('2'); fixture.key('e');
+    assert.equal(game.health, 74);
+    assert.equal(game.onPirateShip, true, 'Eating takes priority over leaving the ship');
+    assert.equal(game.inventory[1], null);
+    assert.equal(game.inventory[0].type, 'cannon');
+});
+
+test('generated coconut items are on land with unique IDs and are restored on a new round', () => {
+    const { game } = setup({ islands: true });
+    const checkDistribution = () => {
+        assert.equal(game.islands.length, 14);
+        const populated = game.islands.filter(island => island.coconuts.length > 0);
+        assert.equal(populated.length, 7);
+        for (const island of populated) {
+            assert.equal(island.coconuts.length, 2);
+            for (const item of island.coconuts) {
+                assert.equal(game.canWalkAt(island.x + item.x, island.y + item.y, island), true);
+            }
+        }
+    };
+    checkDistribution();
+    const coconuts = game.islands.flatMap(island => island.coconuts);
+    assert.ok(coconuts.length > 0);
+    assert.equal(new Set(coconuts.map(item => item.id)).size, coconuts.length);
+    const island = game.islands.find(item => item.coconuts.length);
+    game.onFoot = true; game.walkIsland = island;
+    Object.assign(game.rider, { x: island.x, y: island.y });
+    const coconut = game.nearbyCoconut();
+    assert.ok(coconut);
+    assert.equal(game.pickUpCoconut(), true);
+    assert.equal(island.coconuts.includes(coconut), false);
+    game.reset();
+    checkDistribution();
+    assert.equal(game.inventory.every(item => item === null), true);
+    assert.equal(game.islands.includes(island), false);
+    assert.ok(game.islands.some(item => item.coconuts.length > 0));
+});
 
 function captureSetup() {
     const fixture = setup();

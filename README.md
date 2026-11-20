@@ -236,12 +236,19 @@ Official documentation:
 
 ## Real-time multiplayer relay
 
-Play at **https://shaneh.api.codehw.net/** and choose **Multiplayer**, or open
-https://shaneh.api.codehw.net/game.html?room=ocean in two browsers. Use the room
-form to create a room (1–24 lowercase letters, digits, or hyphens), then share
-the full game URL. Rooms hold up to 16 riders and are public, without accounts.
-Riders receive random labels; do not put real names or personal information in
-room names. Singleplayer does not open a relay connection.
+Choose **Multiplayer** on the home screen, then **Host Room** or **Join Room**.
+Hosting requests a unique four-letter code from the relay. The code appears in
+the bottom-left corner of the ocean, including in fullscreen. Friends choose
+**Join Room** and enter that code; letter case does not matter. Unknown or full
+rooms show an error instead of creating a new room. Rooms hold up to 16 riders.
+After joining, the game URL also contains the code and can be shared directly.
+An empty hosted room remains available for 60 seconds to allow reconnecting.
+Singleplayer does not open a relay connection.
+
+Room codes require both the updated public files and `server/relay.cjs`.
+Restart the relay after updating the server; publishing Firebase Hosting alone
+does not update the room service. Older unnamed-room clients remain supported
+by the relay, but the new host/join flow uses four-letter codes exclusively.
 
 This is a movement/action relay prototype: riders see each other's positions
 and cosmetic spear/cannon shots. Sharks, islands, pickups, pirate ships, health,

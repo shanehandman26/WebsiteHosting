@@ -27,12 +27,47 @@ async function fixture(t) {
         await new Promise(resolve => relay.server.close(resolve));
     });
     async function connect(room = 'ocean') {
-        const ws = new WebSocket(base.replace('http:', 'ws:') + '/multiplayer?room=' + room);
+        return connectRequest('room=' + room);
+    }
+    async function connectRequest(params) {
+        const ws = new WebSocket(base.replace('http:', 'ws:') + '/multiplayer?' + params);
         const welcome = await message(ws, 'welcome');
         return { ws, welcome };
     }
-    return { ...relay, base, connect };
+    return { ...relay, base, connect, connectRequest };
 }
+
+test('hosting assigns a four-letter code, a guest joins it, and unknown codes return an error', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const code = host.welcome.room;
+    assert.match(code, /^[A-Z]{4}$/);
+    const guest = await f.connectRequest('action=join&room=' + code.toLowerCase());
+    assert.equal(guest.welcome.room, code);
+    const stateReceived = message(guest.ws, 'state');
+    host.ws.send(JSON.stringify({ type: 'state', state }));
+    assert.equal((await stateReceived).id, host.welcome.id);
+    const unknown = code === 'ZZZZ' ? 'YYYY' : 'ZZZZ';
+    const rejected = new WebSocket(f.base.replace('http:', 'ws:') + '/multiplayer?action=join&room=' + unknown);
+    const closed = once(rejected, 'close');
+    assert.match((await message(rejected, 'room_error')).message, /not found/);
+    assert.equal((await closed)[0], 4004);
+});
+
+test('a hosted room admits sixteen simultaneous players and refuses a seventeenth', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const code = host.welcome.room;
+    const guests = await Promise.all(Array.from({ length: 15 }, () => f.connectRequest('action=join&room=' + code)));
+    assert.equal(f.rooms.get(code).size, 16);
+    const rejected = new WebSocket(f.base.replace('http:', 'ws:') + '/multiplayer?action=join&room=' + code);
+    const closed = once(rejected, 'close');
+    assert.match((await message(rejected, 'room_error')).message, /full/);
+    assert.equal((await closed)[0], 4009);
+    const deliveries = guests.map(guest => message(guest.ws, 'state'));
+    host.ws.send(JSON.stringify({ type: 'state', state }));
+    for (const update of await Promise.all(deliveries)) assert.equal(update.id, host.welcome.id);
+});
 
 test('relay forwards movement and shots, separates rooms, and reports disconnects', async t => {
     const f = await fixture(t);

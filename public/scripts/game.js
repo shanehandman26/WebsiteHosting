@@ -10,6 +10,24 @@ class Game {
         this.healthAmount = document.getElementById('healthAmount');
         this.gameOverPanel = document.getElementById('gameOver');
         this.deathCause = document.getElementById('deathCause');
+        this.gameOverTime = document.getElementById('gameOverTime');
+        this.minimapCanvas = document.getElementById('minimapCanvas');
+        this.minimapContext = this.minimapCanvas.getContext('2d');
+        this.survivalHud = document.getElementById('survivalHud');
+        this.survivalTimeDisplay = document.getElementById('survivalTime');
+        this.bestSurvivalDisplay = document.getElementById('bestSurvival');
+        const multiplayerParams = new URLSearchParams(window.location?.search || '');
+        this.isSingleplayer = !multiplayerParams.has('room') && multiplayerParams.get('action') !== 'host';
+        this.survivalSeconds = 0;
+        this.zoneDamageCarry = 0;
+        this.bestSurvivalSeconds = 0;
+        if (this.isSingleplayer) {
+            try {
+                const saved = Number(window.localStorage?.getItem('ocean-rush-best-survival'));
+                if (Number.isFinite(saved) && saved >= 0) this.bestSurvivalSeconds = Math.floor(saved);
+            } catch { /* Storage may be unavailable; the timer still works for this session. */ }
+        }
+        this.survivalHud.hidden = !this.isSingleplayer;
         this.oceanScreen = document.getElementById('oceanScreen');
         this.fullscreenButton = document.getElementById('fullscreenButton');
         this.fullscreenFallback = false;
@@ -99,10 +117,11 @@ class Game {
             this.bindTouchButton(id, key);
             this.bindTouchButton('fullscreen-' + id, key);
         }
-        this.multiplayer = window.OceanMultiplayer && new URLSearchParams(window.location.search).has('room') ? new window.OceanMultiplayer(this) : null;
+        this.multiplayer = window.OceanMultiplayer && !this.isSingleplayer ? new window.OceanMultiplayer(this) : null;
         this.updateCamera();
         this.updateBoostDisplay();
         this.updateHealthDisplay();
+        this.updateSurvivalDisplay();
         this.updateInventory();
         this.updatePickupPrompt();
         requestAnimationFrame(time => this.frame(time));
@@ -169,12 +188,13 @@ class Game {
             this.inventorySlots[index].setAttribute('aria-label', 'Inventory slot ' + (index + 1) + ': ' + (item ? item.name : 'empty'));
             this.inventoryLabels[index].hidden = !item;
             const cannon = item?.type === 'cannon';
-            this.inventoryLabels[index].src = cannon ? 'assets/cannon.svg' : 'assets/spear.svg';
-            this.inventoryLabels[index].alt = cannon ? 'Cannon' : 'Spear';
-            this.durabilityBars[index].hidden = !item || cannon;
-            this.durabilityBars[index].value = item && !cannon ? item.durability : 0;
+            const coconut = item?.type === 'coconut';
+            this.inventoryLabels[index].src = cannon ? 'assets/cannon.svg' : coconut ? 'assets/coconut.svg' : 'assets/spear.svg';
+            this.inventoryLabels[index].alt = cannon ? 'Cannon' : coconut ? 'Coconut' : 'Spear';
+            this.durabilityBars[index].hidden = !item || cannon || coconut;
+            this.durabilityBars[index].value = item && !cannon && !coconut ? item.durability : 0;
             this.durabilityBars[index].setAttribute('aria-valuetext', cannon ? 'Cannon: one shot every 3 seconds' :
-                item ? item.durability + ' of ' + this.gunMaxDurability + ' shots remaining' : 'Empty slot');
+                coconut ? 'Coconut' : item ? item.durability + ' of ' + this.gunMaxDurability + ' shots remaining' : 'Empty slot');
         }
         this.inventoryCount.textContent = this.inventory.filter(Boolean).length + ' / 6';
     }
@@ -192,16 +212,63 @@ class Game {
         return closest;
     }
 
+    nearbyCoconut() {
+        if (!this.onFoot || !this.walkIsland || !this.canWalkAt(this.rider.x, this.rider.y)) return null;
+        let closest = null, distance = 48;
+        for (const coconut of this.walkIsland.coconuts || []) {
+            const separation = Math.hypot(this.walkIsland.x + coconut.x - this.rider.x,
+                this.walkIsland.y + coconut.y - this.rider.y);
+            if (separation <= distance) { closest = coconut; distance = separation; }
+        }
+        return closest;
+    }
+
+    pickUpCoconut() {
+        if (this.gameOver) return false;
+        const coconut = this.nearbyCoconut();
+        const slot = this.inventory.indexOf(null);
+        if (!coconut || slot < 0) return false;
+        this.inventory[slot] = { id: coconut.id, type: 'coconut', name: 'Coconut' };
+        this.walkIsland.coconuts = this.walkIsland.coconuts.filter(item => item !== coconut);
+        this.selectedSlot = slot;
+        this.updateInventory(); this.updatePickupPrompt();
+        return true;
+    }
+
+    eatCoconut() {
+        if (this.gameOver || this.inventory[this.selectedSlot]?.type !== 'coconut') return false;
+        this.health = Math.min(100, this.health + 12);
+        this.inventory[this.selectedSlot] = null;
+        this.updateHealthDisplay(); this.updateInventory(); this.updatePickupPrompt();
+        return true;
+    }
+
     updatePickupPrompt() {
         if (this.gameOver) { this.pickupPrompt.hidden = true; return; }
+        if (this.inventory[this.selectedSlot]?.type === 'coconut') {
+            this.pickupPrompt.hidden = false;
+            this.pickupPrompt.textContent = 'E · EAT COCONUT';
+            return;
+        }
         if (this.onPirateShip || this.canBoardPirateShip()) {
             this.pickupPrompt.hidden = false;
             this.pickupPrompt.textContent = this.onPirateShip ? 'E · RETURN TO JET SKI' : 'E · BOARD PIRATE SHIP';
             return;
         }
+        const coconut = this.nearbyCoconut();
+        if (coconut && this.inventory.includes(null)) {
+            this.pickupPrompt.hidden = false;
+            this.pickupPrompt.textContent = 'E · PICK UP COCONUT';
+            return;
+        }
         if (this.onFoot && this.canBoardBoat()) {
             this.pickupPrompt.hidden = false;
             this.pickupPrompt.textContent = 'E · BOARD JET SKI';
+            return;
+        }
+        if (coconut) {
+            this.pickupPrompt.hidden = false;
+            this.pickupPrompt.textContent = 'INVENTORY FULL';
             return;
         }
         if (!this.onFoot && !(this.nearbyGun() && this.inventory.includes(null)) && this.landingSpot()) {
@@ -245,6 +312,7 @@ class Game {
 
     interact() {
         if (this.gameOver) return;
+        if (this.eatCoconut()) return;
         if (this.onPirateShip) {
             const saved = this.stowedCannonSlot;
             this.inventory[saved.slot] = saved.item;
@@ -267,7 +335,9 @@ class Game {
             this.syncPirateRider();
             this.updateInventory();
         } else if (this.onFoot) {
-            if (this.canBoardBoat()) {
+            if (this.nearbyCoconut() && this.inventory.includes(null)) {
+                this.pickUpCoconut();
+            } else if (this.canBoardBoat()) {
                 Object.assign(this.rider, this.parkedBoat, { vx: 0, vy: 0 });
                 this.onFoot = false; this.parkedBoat = null; this.walkIsland = null;
                 this.boardReadyAt = this.time + 2;
@@ -543,6 +613,10 @@ class Game {
         this.invulnerable = 0;
         this.gameOver = false;
         this.gameOverPanel.hidden = true;
+        this.gameOverTime.textContent = '';
+        this.survivalSeconds = 0;
+        this.zoneDamageCarry = 0;
+        this.updateSurvivalDisplay();
         if (this.deathCause) this.deathCause.textContent = 'Shark Attack';
         this.cannonballs = [];
         this.sharks = this.createSharks();
@@ -795,10 +869,7 @@ class Game {
                 ball.life = 0;
                 this.health = Math.max(0, this.health - 75);
                 if (this.health === 0) {
-                    this.gameOver = true;
-                    this.releaseControls();
-                    this.gameOverPanel.hidden = false;
-                    if (this.deathCause) this.deathCause.textContent = 'Cannonball Attack';
+                    this.finishRun('Cannonball Attack');
                 }
                 this.updateHealthDisplay();
             }
@@ -928,11 +999,25 @@ class Game {
                 return { x: px * Math.cos(rotation) - py * Math.sin(rotation),
                     y: px * Math.sin(rotation) + py * Math.cos(rotation), angle };
             });
-            const coconuts = palms.flatMap(palm => Array.from({ length: 2 }, () => ({
-                x: palm.x * 0.6 + (Math.random() - 0.5) * 12,
-                y: palm.y * 0.6 + (Math.random() - 0.5) * 12
-            })));
-            islands.push({ x, y, radius, points, palms, coconuts });
+            islands.push({ x, y, radius, points, palms, coconuts: [] });
+        }
+        const coconutIslands = islands.map((island, index) => ({ island, index }));
+        for (let i = coconutIslands.length - 1; i > 0; i--) {
+            const other = Math.floor(Math.random() * (i + 1));
+            [coconutIslands[i], coconutIslands[other]] = [coconutIslands[other], coconutIslands[i]];
+        }
+        for (const { island, index } of coconutIslands.slice(0, Math.floor(islands.length / 2))) {
+            const count = 2;
+            island.coconuts = Array.from({ length: count }, (_, item) => {
+                const angle = item / count * Math.PI * 2 + Math.random() * 0.3;
+                const distance = item === 0 ? Math.min(24, island.radius * 0.15) :
+                    island.radius * (0.15 + Math.random() * 0.4);
+                let x = Math.cos(angle) * distance, y = Math.sin(angle) * distance;
+                for (let attempt = 0; attempt < 12 && !this.canWalkAt(island.x + x, island.y + y, island); attempt++) {
+                    x *= 0.65; y *= 0.65;
+                }
+                return { id: 'coconut-' + index + '-' + item, x, y };
+            });
         }
         return islands;
     }
@@ -1027,8 +1112,12 @@ class Game {
             this.sharkShape(points, '#b657df');
             ctx.scale(0.92, 0.92); this.sharkShape(points, '#d28cee'); ctx.restore();
             for (const coconut of island.coconuts || []) {
-                this.ellipse(x + coconut.x, y + coconut.y, 4, 3.5, '#79436f');
-                this.ellipse(x + coconut.x - 1, y + coconut.y - 1, 1.2, 1, '#e3a0c1');
+                this.ellipse(x + coconut.x, y + coconut.y + 3, 10, 5, 'rgba(43, 18, 65, 0.35)');
+                this.ellipse(x + coconut.x, y + coconut.y, 8, 7, '#995d3d');
+                this.ellipse(x + coconut.x - 2, y + coconut.y - 2, 4, 3, '#d7a36b');
+                for (const [cx, cy] of [[1, -2], [4, -1], [2, 2]]) {
+                    this.ellipse(x + coconut.x + cx, y + coconut.y + cy, 1.2, 1.2, '#422b2c');
+                }
             }
             for (const palm of island.palms) {
                 ctx.save(); ctx.translate(x + palm.x, y + palm.y); ctx.rotate(palm.angle);
@@ -1183,6 +1272,74 @@ class Game {
         ctx.restore();
     }
 
+    safeAreaBounds() {
+        const progress = Math.min(1, Math.max(0, this.survivalSeconds / 180));
+        // Use the standard game view so fullscreen changes cannot alter the safe area.
+        const minWidth = Math.min(this.world.width, 1200 * 4);
+        const minHeight = Math.min(this.world.height, 660 * 4);
+        const width = this.world.width + (minWidth - this.world.width) * progress;
+        const height = this.world.height + (minHeight - this.world.height) * progress;
+        return { x: (this.world.width - width) / 2, y: (this.world.height - height) / 2, width, height };
+    }
+
+    updateSafeArea(dt) {
+        if (this.gameOver) return;
+        const area = this.safeAreaBounds();
+        const outside = this.rider.x < area.x || this.rider.x > area.x + area.width ||
+            this.rider.y < area.y || this.rider.y > area.y + area.height;
+        if (!outside) { this.zoneDamageCarry = 0; return; }
+        // Carry sub-point damage between frames for an exact two points per second.
+        this.zoneDamageCarry += dt * 2;
+        const damage = Math.floor(this.zoneDamageCarry + 1e-8);
+        if (damage > 0) {
+            this.zoneDamageCarry = Math.max(0, this.zoneDamageCarry - damage);
+            this.health = Math.max(0, this.health - damage);
+            if (this.health === 0) this.finishRun('Outside Safe Area');
+            this.updateHealthDisplay();
+        }
+    }
+
+    drawSafeArea(ctx, sx = 1, sy = 1) {
+        const area = this.safeAreaBounds();
+        const x = area.x * sx, y = area.y * sy, width = area.width * sx, height = area.height * sy;
+        const worldWidth = this.world.width * sx, worldHeight = this.world.height * sy;
+        ctx.save();
+        ctx.fillStyle = 'rgba(238, 48, 101, 0.22)';
+        ctx.fillRect(0, 0, worldWidth, y);
+        ctx.fillRect(0, y + height, worldWidth, worldHeight - y - height);
+        ctx.fillRect(0, y, x, height);
+        ctx.fillRect(x + width, y, worldWidth - x - width, height);
+        ctx.strokeStyle = '#ff759f'; ctx.lineWidth = sx === 1 ? 4 : 1.5;
+        ctx.strokeRect(x, y, width, height);
+        ctx.restore();
+    }
+
+    formatSurvivalTime(elapsed) {
+        const seconds = Math.floor(elapsed + 1e-8);
+        return String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
+    }
+
+    finishRun(cause) {
+        this.gameOver = true;
+        this.releaseControls();
+        this.gameOverPanel.hidden = false;
+        if (this.deathCause) this.deathCause.textContent = cause;
+        this.gameOverTime.textContent = 'Survived ' + this.formatSurvivalTime(this.survivalSeconds);
+    }
+
+    updateSurvivalDisplay() {
+        if (!this.isSingleplayer) return;
+        const seconds = Math.floor(this.survivalSeconds + 1e-8);
+        if (seconds > this.bestSurvivalSeconds) {
+            this.bestSurvivalSeconds = seconds;
+            try {
+                window.localStorage?.setItem('ocean-rush-best-survival', String(seconds));
+            } catch { /* Keep the session best even if persistent storage is blocked. */ }
+        }
+        this.survivalTimeDisplay.textContent = this.formatSurvivalTime(seconds);
+        this.bestSurvivalDisplay.textContent = this.formatSurvivalTime(this.bestSurvivalSeconds);
+    }
+
     updateHealthDisplay() {
         this.healthBar.value = this.health;
         this.healthAmount.textContent = this.health + '%';
@@ -1205,10 +1362,7 @@ class Game {
         this.blood.push({ x: this.rider.x, y: this.rider.y, life: this.bloodLifetime });
         this.invulnerable = 1.2;
         if (this.health === 0) {
-            this.gameOver = true;
-            this.releaseControls();
-            this.gameOverPanel.hidden = false;
-            if (this.deathCause) this.deathCause.textContent = 'Shark Attack';
+            this.finishRun('Shark Attack');
         }
         this.updateHealthDisplay();
     }
@@ -1577,6 +1731,8 @@ class Game {
         for (const pool of this.blood) pool.life = Math.max(0, pool.life - dt);
         this.blood = this.blood.filter(pool => pool.life > 0);
         if (this.gameOver) return;
+        this.survivalSeconds += dt;
+        if (this.isSingleplayer) this.updateSurvivalDisplay();
         this.invulnerable = Math.max(0, this.invulnerable - dt);
         this.updateFish(dt);
         const held = key => this.keys.has(key) || this.touchDirections.has(key);
@@ -1661,6 +1817,7 @@ class Game {
         this.updatePirateShip(dt);
         this.updateCannonballs(dt);
         this.updateSharks(dt);
+        this.updateSafeArea(dt);
         this.updateHealthDisplay();
         this.updatePickupPrompt();
     }
@@ -1768,7 +1925,7 @@ class Game {
             this.drawJetSki(this.parkedBoat, false);
             this.drawWalkingRider();
         } else this.drawJetSki();
-        if (this.inventory[this.selectedSlot] && this.inventory[this.selectedSlot].type !== 'cannon') {
+        if (this.inventory[this.selectedSlot] && !['cannon', 'coconut'].includes(this.inventory[this.selectedSlot].type)) {
             const angle = this.aimAngle();
             this.drawGun(this.rider.x + Math.cos(angle) * 26, this.rider.y + Math.sin(angle) * 26, angle);
         }
@@ -1785,7 +1942,7 @@ class Game {
             this.sharkShape([[-29, 0], [-34, -3], [-34, 3]], '#efa85b');
             ctx.restore();
         }
-        if (this.aim.active && this.inventory[this.selectedSlot] && !this.gameOver) {
+        if (this.aim.active && this.inventory[this.selectedSlot] && this.inventory[this.selectedSlot].type !== 'coconut' && !this.gameOver) {
             const x = this.camera.x + this.aim.u * width;
             const y = this.camera.y + this.aim.v * height;
             ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
@@ -1805,11 +1962,34 @@ class Game {
         // Lantern-lit hull and burning cannonballs remain readable in the night.
         this.drawPirateShip();
         this.drawCannonballs();
+        this.drawSafeArea(ctx);
         ctx.restore();
         if (this.invulnerable > 0 && !this.gameOver) {
             ctx.fillStyle = 'rgba(255, 106, 83, ' + (0.08 + Math.sin(this.time * 25) * 0.04) + ')';
             ctx.fillRect(0, 0, width, height);
         }
+        this.drawMinimap();
+    }
+
+    drawMinimap() {
+        const ctx = this.minimapContext, { width, height } = this.minimapCanvas;
+        const sx = width / this.world.width, sy = height / this.world.height;
+        ctx.save();
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#10233e'; ctx.fillRect(0, 0, width, height);
+        this.drawSafeArea(ctx, sx, sy);
+        ctx.strokeStyle = 'rgba(143, 245, 255, 0.55)'; ctx.lineWidth = 1;
+        ctx.strokeRect(this.camera.x * sx, this.camera.y * sy,
+            Math.min(this.canvas.width, this.world.width - this.camera.x) * sx,
+            Math.min(this.canvas.height, this.world.height - this.camera.y) * sy);
+        const ship = this.pirateShip;
+        ctx.save(); ctx.translate(ship.x * sx, ship.y * sy); ctx.rotate(ship.angle);
+        ctx.fillStyle = ship.disarmed ? '#ffd684' : '#ff8a63';
+        ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -3); ctx.lineTo(-4, 3); ctx.closePath(); ctx.fill(); ctx.restore();
+        ctx.translate(this.rider.x * sx, this.rider.y * sy); ctx.rotate(this.rider.angle);
+        ctx.fillStyle = '#8ff5ff'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.restore();
     }
 
     drawMuzzleFire() {

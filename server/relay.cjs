@@ -1,7 +1,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomInt } = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const PUBLIC = path.resolve(__dirname, '../public');
@@ -16,8 +16,47 @@ function cleanState(s) {
         boosting: s.boosting === true, dead: s.dead === true };
 }
 
+function generateRoomCode(rooms, choose = randomInt) {
+    for (let attempt = 0; attempt < 128; attempt++) {
+        const code = Array.from({ length: 4 }, () => String.fromCharCode(65 + choose(26))).join('');
+        if (!rooms.has(code)) return code;
+    }
+    return null;
+}
+
+function selectRoom(rooms, params) {
+    const action = params.get('action');
+    const error = (status, code, message) => ({ error: true, status, code, message });
+    if (action === 'host') {
+        if (rooms.size >= 32) return error(503, 4009, 'All rooms are busy. Please try again shortly.');
+        const room = generateRoomCode(rooms);
+        return room ? { room, hosted: true } : error(503, 4009, 'Unable to create a room. Please try again.');
+    }
+    if (action === 'join') {
+        const room = (params.get('room') || '').trim().toUpperCase();
+        if (!/^[A-Z]{4}$/.test(room)) return error(400, 4000, 'Enter a four-letter room code.');
+        const peers = rooms.get(room);
+        if (!peers?.hosted || (peers.expiresAt && peers.expiresAt <= Date.now())) {
+            if (peers?.expiresAt && peers.expiresAt <= Date.now()) rooms.delete(room);
+            return error(404, 4004, 'Room not found. Check the code or ask your friend to host a room.');
+        }
+        if (peers.size >= 16) return error(503, 4009, 'This room is full. Ask your friend to host another room.');
+        return { room, hosted: true };
+    }
+    // Existing relay clients can continue using their original room links.
+    const room = params.get('room') || 'ocean';
+    if (action || !/^[a-z0-9-]{1,24}$/.test(room)) return error(400, 4000, 'Invalid room.');
+    if ((rooms.get(room)?.size || 0) >= 16 || (!rooms.has(room) && rooms.size >= 32)) return error(503, 4009, 'Room unavailable.');
+    return { room, hosted: false };
+}
+
 function createRelay() {
     const rooms = new Map();
+    const expireRooms = () => {
+        for (const [code, peers] of rooms) {
+            if (!peers.size && peers.expiresAt && peers.expiresAt <= Date.now()) rooms.delete(code);
+        }
+    };
     const server = http.createServer((req, res) => {
         let url;
         try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
@@ -48,17 +87,28 @@ function createRelay() {
     server.on('upgrade', (req, socket, head) => {
         let url;
         try { url = new URL(req.url, 'http://localhost'); } catch { socket.destroy(); return; }
-        const room = url.searchParams.get('room') || 'ocean';
         const reject = code => { socket.end(`HTTP/1.1 ${code}\r\nConnection: close\r\n\r\n`); };
-        if (url.pathname !== '/multiplayer' || !/^[a-z0-9-]{1,24}$/.test(room)) return reject('400 Bad Request');
-        if (wss.clients.size >= 128 || (rooms.get(room)?.size || 0) >= 16 || (!rooms.has(room) && rooms.size >= 32)) return reject('503 Service Unavailable');
+        if (url.pathname !== '/multiplayer') return reject('400 Bad Request');
+        if (wss.clients.size >= 128) return reject('503 Service Unavailable');
+        expireRooms();
+        const admission = selectRoom(rooms, url.searchParams);
+        if (admission.error) {
+            if (!url.searchParams.has('action')) return reject(admission.status === 400 ? '400 Bad Request' : '503 Service Unavailable');
+            return wss.handleUpgrade(req, socket, head, ws => {
+                ws.on('error', () => {});
+                send(ws, { type: 'room_error', message: admission.message });
+                ws.close(admission.code, admission.message);
+            });
+        }
         wss.handleUpgrade(req, socket, head, ws => {
             socket.setNoDelay(true);
-            wss.emit('connection', ws, room);
+            wss.emit('connection', ws, admission.room, admission.hosted);
         });
     });
-    wss.on('connection', (ws, room) => {
+    wss.on('connection', (ws, room, hosted = false) => {
         const peers = rooms.get(room) || new Set();
+        peers.hosted = peers.hosted || hosted;
+        peers.expiresAt = 0;
         rooms.set(room, peers);
         ws.id = randomUUID(); ws.alive = true;
         ws.state = null;
@@ -92,10 +142,14 @@ function createRelay() {
         ws.on('close', () => {
             peers.delete(ws);
             broadcast({ type: 'leave', id: ws.id });
-            if (!peers.size) rooms.delete(room);
+            if (!peers.size) {
+                if (peers.hosted) peers.expiresAt = Date.now() + 60000;
+                else rooms.delete(room);
+            }
         });
     });
     const heartbeat = setInterval(() => {
+        expireRooms();
         for (const ws of wss.clients) {
             if (!ws.alive) ws.terminate();
             else { ws.alive = false; ws.ping(); }
@@ -103,7 +157,7 @@ function createRelay() {
     }, 15000);
     heartbeat.unref();
     server.on('close', () => clearInterval(heartbeat));
-    return { server, wss };
+    return { server, wss, rooms };
 }
 
 if (require.main === module) {
@@ -114,4 +168,4 @@ if (require.main === module) {
     const stop = () => { for (const ws of wss.clients) ws.terminate(); wss.close(); server.close(); };
     process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }
-module.exports = { createRelay, cleanState };
+module.exports = { createRelay, cleanState, generateRoomCode, selectRoom };

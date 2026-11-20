@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ocean Rush — Jet Ski</title>
-    <link rel="stylesheet" href="style.css?v=relay-1">
+    <link rel="stylesheet" href="style.css?v=room-codes-33">
     <script type="text/javascript">
     (function(c,l,a,r,i,t,y){
         c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
@@ -28,6 +28,10 @@
                     <progress id="boostBar" max="100" value="100" aria-label="Boost available"></progress>
                     <small>HOLD Q · RELEASE TO RECHARGE</small>
                 </div>
+                <div id="survivalHud" class="survival-hud" hidden>
+                    <div><span>SURVIVAL</span><strong id="survivalTime" role="timer" aria-label="Survival time">00:00</strong></div>
+                    <div><span>BEST TIME</span><strong id="bestSurvival">00:00</strong></div>
+                </div>
             </div>
             <div class="health-hud">
                 <div class="boost-label"><label for="healthBar">RIDER HEALTH</label><span id="healthAmount">100%</span></div>
@@ -45,7 +49,13 @@
                 </ol>
             </section>
             <p id="pickupPrompt" class="pickup-prompt" hidden>E · PICK UP SPEAR GUN</p>
+            <div id="roomCodeHud" class="room-code" hidden aria-label="Multiplayer room code">
+                <span>ROOM</span><strong id="roomCode">----</strong>
+            </div>
             <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="Enter fullscreen" aria-pressed="false">⛶ Fullscreen</button>
+            <aside class="minimap" aria-label="Ocean minimap">
+                <canvas id="minimapCanvas" width="240" height="160" aria-label="Your position, the pirate ship, and your current view"></canvas>
+            </aside>
             <div class="fullscreen-touch-controls" aria-label="Fullscreen touch controls">
                 <button id="fullscreen-moveUp" type="button" aria-label="Hold to move up">↑</button>
                 <button id="fullscreen-moveLeft" type="button" aria-label="Hold to move left">←</button>
@@ -54,7 +64,7 @@
                 <button id="fullscreen-boostButton" type="button" aria-label="Hold to boost">Q BOOST</button>
             </div>
             <div id="gameOver" class="game-over" hidden>
-                <div><h2>You were caught!</h2><p id="deathCause">Shark Attack</p><button id="restartButton" type="button">Ride again ↺</button></div>
+                <div><h2>You were caught!</h2><p id="deathCause">Shark Attack</p><p id="gameOverTime"></p><button id="restartButton" type="button">Ride again ↺</button></div>
             </div>
         </section>
         <footer class="controls">
@@ -68,16 +78,12 @@
             <button id="moveRight" type="button" aria-label="Hold to move right">RIGHT →</button>
             <button id="boostButton" type="button" aria-label="Hold to boost">HOLD TO BOOST · Q</button>
         </div>
-        <form id="roomForm" class="room-controls" method="get">
-            <label for="roomName">MULTIPLAYER ROOM</label>
-            <input id="roomName" name="room" value="ocean" maxlength="24" pattern="[a-z0-9-]{1,24}" required autocomplete="off" aria-describedby="roomHelp">
-            <button type="submit">Join room</button>
-            <small id="roomHelp">Share this page's URL to ride together. Movement and shots are shared; enemies and damage are local.</small>
-        </form>
+        <p id="roomFeedback" class="room-feedback" role="status" hidden></p>
+        <a id="roomLobbyLink" class="room-lobby-link" href="multiplayer.html" hidden>Host or join another room</a>
         <p class="hint">Each ocean territory has a patrolling shark. Staying still draws your area's guard toward you. Use Q to escape.</p>
     </main>
     <script src="scripts/relay-config.js?v=relay-1"></script>
-    <script src="scripts/multiplayer.js?v=relay-1"></script>
-    <script src="scripts/game.js?v=relay-1"></script>
+    <script src="scripts/multiplayer.js?v=room-codes-33"></script>
+    <script src="scripts/game.js?v=room-codes-34"></script>
 </body>
 </html>

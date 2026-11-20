@@ -4,22 +4,17 @@ class OceanMultiplayer {
         this.game = game;
         this.peers = new Map();
         this.shots = [];
-        this.room = new URLSearchParams(location.search).get('room') || 'ocean';
-        if (!/^[a-z0-9-]{1,24}$/.test(this.room)) this.room = 'ocean';
+        const params = new URLSearchParams(location.search);
+        this.hosting = params.get('action') === 'host';
+        this.room = (params.get('room') || '').trim().toUpperCase();
         this.status = document.getElementById('networkStatus');
-        this.roomInput = document.getElementById('roomName');
-        this.roomInput.value = this.room;
+        this.roomCodeHud = document.getElementById('roomCodeHud');
+        this.roomCode = document.getElementById('roomCode');
+        this.feedback = document.getElementById('roomFeedback');
+        document.getElementById('roomLobbyLink').hidden = false;
         this.retry = 500;
         this.closed = false;
         this.rtt = null;
-        document.getElementById('roomForm').addEventListener('submit', event => {
-            event.preventDefault();
-            const room = this.roomInput.value.trim().toLowerCase();
-            if (!/^[a-z0-9-]{1,24}$/.test(room)) return;
-            const url = new URL(location.href);
-            url.searchParams.set('room', room);
-            location.assign(url);
-        });
         window.addEventListener('pagehide', () => {
             this.closed = true;
             clearTimeout(this.reconnect);
@@ -29,15 +24,21 @@ class OceanMultiplayer {
         window.addEventListener('pageshow', event => {
             if (event.persisted) location.reload();
         });
+        if (!this.hosting && !/^[A-Z]{4}$/.test(this.room)) {
+            this.failRoom('Enter a four-letter room code to join.');
+            return;
+        }
         this.connect();
         this.sender = setInterval(() => this.tick(), 1000 / 30);
     }
 
     connect() {
-        this.status.textContent = 'CONNECTING…';
+        this.status.textContent = this.hosting ? 'CREATING ROOM…' : 'JOINING ROOM…';
         const endpoint = new URL(window.OCEAN_RELAY_URL || '/multiplayer', location.href);
         endpoint.protocol = endpoint.protocol === 'http:' ? 'ws:' : endpoint.protocol === 'https:' ? 'wss:' : endpoint.protocol;
-        endpoint.searchParams.set('room', this.room);
+        endpoint.searchParams.set('action', this.hosting ? 'host' : 'join');
+        if (this.hosting) endpoint.searchParams.delete('room');
+        else endpoint.searchParams.set('room', this.room);
         const socket = this.socket = new WebSocket(endpoint);
         const timeout = setTimeout(() => socket.close(), 8000);
         socket.addEventListener('open', () => {
@@ -52,8 +53,23 @@ class OceanMultiplayer {
             try { msg = JSON.parse(event.data); } catch { return; }
             const now = performance.now();
             if (msg.type === 'welcome') {
+                const code = (msg.room || '').toUpperCase();
+                if (!/^[A-Z]{4}$/.test(code)) {
+                    this.failRoom('The room service needs updating. Please try again later.');
+                    return;
+                }
+                this.room = code; this.hosting = false;
+                this.roomCode.textContent = code;
+                this.roomCodeHud.hidden = false;
+                this.feedback.hidden = true;
+                const url = new URL(location.href);
+                url.searchParams.set('room', code); url.searchParams.delete('action');
+                window.history?.replaceState(null, '', url.href);
                 this.id = msg.id;
                 for (const p of msg.players) this.receive(p.id, p.state, now);
+            } else if (msg.type === 'room_error') {
+                this.failRoom(msg.message || 'Unable to join this room.');
+                return;
             } else if (msg.type === 'state') this.receive(msg.id, msg.state, now);
             else if (msg.type === 'leave') this.peers.delete(msg.id);
             else if (msg.type === 'pong') {
@@ -71,12 +87,23 @@ class OceanMultiplayer {
         socket.addEventListener('close', () => {
             clearTimeout(timeout);
             this.peers.clear(); this.shots = []; this.rtt = null;
+            if (this.closed) return;
             this.status.textContent = 'OFFLINE · RETRYING';
             if (!this.closed) {
                 this.reconnect = setTimeout(() => this.connect(), this.retry + Math.random() * 300);
                 this.retry = Math.min(this.retry * 2, 10000);
             }
         });
+    }
+
+    failRoom(message) {
+        this.closed = true;
+        clearTimeout(this.reconnect); clearInterval(this.sender);
+        this.roomCodeHud.hidden = true;
+        this.status.textContent = 'ROOM UNAVAILABLE';
+        this.feedback.textContent = message;
+        this.feedback.hidden = false;
+        this.socket?.close();
     }
 
     send(message) {
