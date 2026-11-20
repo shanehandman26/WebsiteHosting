@@ -197,6 +197,17 @@ test('a spectator minimap shows living riders without a phantom marker for the e
     assert.equal(drawCalls.filter(call => call.method === 'fill' && call.fillStyle === '#8ff5ff').length, 0);
 });
 
+test('floating usernames remain horizontal above the rider and move with their world position', () => {
+    const { game, drawCalls } = setup();
+    game.drawPlayerName({ x: 1200, y: 800, angle: 2, onFoot: false }, 'WaveRider');
+    const text = drawCalls.find(call => call.method === 'fillText');
+    assert.deepEqual(text.args, ['WaveRider', 1200, 740]);
+    assert.equal(drawCalls.some(call => call.method === 'rotate'), false);
+    drawCalls.length = 0;
+    game.drawPlayerName({ x: 1500, y: 900, onFoot: true }, 'WaveRider');
+    assert.deepEqual(drawCalls.find(call => call.method === 'fillText').args, ['WaveRider', 1500, 866]);
+});
+
 test('invalid or blocked browser storage cannot break survival timing', () => {
     for (const saved of ['not-a-number', '-10', 'Infinity']) {
         const fixture = setup({ storage: new Map([['ocean-rush-best-survival', saved]]) });
@@ -455,7 +466,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=pvp-rounds-40'));
+        assert.ok(html.includes('game.js?v=usernames-41'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }

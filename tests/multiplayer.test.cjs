@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-function setup({ search = '?room=crew' } = {}) {
+function setup({ search = '?room=crew', username = '' } = {}) {
     let now = 100;
     const elements = Object.fromEntries(['networkStatus', 'roomCodeHud', 'roomCode', 'roomFeedback', 'roomLobbyLink', 'roomWaiting', 'startGameButton', 'waitingPlayers', 'waitingMessage', 'minimapLegend', 'roundResult', 'nextRoundButton', 'resetButton', 'restartButton', 'roundWinner', 'roundResultMessage', 'spectatorBanner']
         .map(id => [id, { hidden: true, addEventListener(name, fn) { this[name] = fn; } }]));
@@ -25,7 +25,7 @@ function setup({ search = '?room=crew' } = {}) {
         setInterval: fn => { intervals.push(fn); return intervals.length; }, clearInterval() {}
     });
     const game = {
-        rider: { x: 3000, y: 2000, vx: 280, vy: 0, angle: 0 }, onFoot: false, onPirateShip: false, gameOver: false,
+        username, rider: { x: 3000, y: 2000, vx: 280, vy: 0, angle: 0 }, onFoot: false, onPirateShip: false, gameOver: false,
         inventory: Array(6).fill(null), selectedSlot: 0, time: 0, gameOverPanel: { hidden: true },
         releaseControls() {}, updateCamera() {}, updateInventory() {}, updateHealthDisplay() {}, updatePickupPrompt() {},
         finishRun(cause) { this.gameOver = true; this.gameOverPanel.hidden = false; this.cause = cause; }
@@ -51,8 +51,7 @@ test('client joins the selected room, sends state and actions, and measures RTT'
     assert.equal(new URL(f.socket.url).searchParams.get('action'), 'join');
     assert.equal(f.socket.sent.length, 0, 'Movement waits for the server world');
     f.welcome();
-    assert.equal(f.socket.sent[0].type, 'state');
-    assert.equal(f.socket.sent[0].state.x, 3000);
+    assert.equal(f.socket.sent.find(m => m.type === 'state').state.x, 3000);
     f.now(145);
     f.receive({ type: 'pong', at: 100 });
     assert.match(f.elements.networkStatus.textContent, /45 MS RTT/);
@@ -309,4 +308,16 @@ test('late joiners see spectator status and everyone sees the authoritative winn
     assert.equal(f.client.playing, true); assert.equal(f.client.spectating, false);
     assert.equal(f.game.gameOver, false); assert.equal(f.game.health, 100);
     assert.equal(f.game.rider.x, 720);
+});
+
+test('chosen names are sent as profile data and used for remote floating labels', () => {
+    const f = setup({ username: 'WaveRider' });
+    f.welcome();
+    assert.deepEqual(f.socket.sent.find(m => m.type === 'profile'), { type: 'profile', username: 'WaveRider' });
+    const labels = [];
+    f.game.isOnScreen = () => true;
+    f.game.drawPlayerName = (pose, name) => labels.push({ x: pose.x, name });
+    f.receive({ type: 'state', id: 'other', state: { username: 'Neon_7', x: 3200, y: 2100, vx: 0, vy: 0, angle: 0, dead: false } });
+    f.client.drawNames();
+    assert.deepEqual(labels, [{ x: 3200, name: 'Neon_7' }]);
 });

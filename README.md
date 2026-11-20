@@ -18,6 +18,25 @@ navigation buoys show movement through the map; buoys are not obstacles.
 Speed remains displayed in MPH. The car, road, and jump
 mechanics have been replaced.
 
+### Rider usernames
+
+The home screen has an optional **Username** field. Choose a made-up alias of
+up to 16 letters, numbers, spaces, hyphens, or underscores. The browser remembers
+the selection for future games. Names are drawn horizontally above your rider
+and other players, with a dark outline so they remain readable over the ocean.
+They follow the rider on the jet ski, on foot, and aboard the pirate ship.
+Eliminated riders do not leave floating name labels behind.
+
+Multiplayer registers the name with the server after connecting, and peers,
+late joiners, next rounds, and winner announcements use that server-validated
+name. It is display text; player identity and authorization still use the
+server-assigned connection ID. Names stay fixed for a connection. To change a
+name, return to the home screen and enter a new alias before joining again.
+An empty field uses a generated Rider label in multiplayer and “Rider” in
+singleplayer. Names are stored in browser storage and room memory, not in a
+database, URL, or analytics event. If browser storage is blocked, gameplay still
+works with the default name. Never use real names or personal information.
+
 ### Boost behavior
 
 The tank holds 100 units. Holding Q drains 25 units/second (four seconds from
@@ -307,7 +326,7 @@ player; their connection stays in the room. Joining or reconnecting after the
 start enters spectator mode, so reconnecting cannot restore a contestant.
 
 Once only one contestant is alive, the server freezes the round and sends the
-same winner to everyone. The screen displays the winner's generated Rider label.
+same winner to everyone. The screen displays the winner's chosen username (or generated Rider label).
 If the last contestants die in the same simulation tick, the result is a draw.
 The result remains fixed even if the winner later disconnects.
 

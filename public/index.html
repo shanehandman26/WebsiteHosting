@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ocean Rush — Jet Ski</title>
-    <link rel="stylesheet" href="style.css?v=relay-1">
+    <link rel="stylesheet" href="style.css?v=usernames-41">
     <style>
         body.home-screen { display: grid; place-items: center; min-height: 100vh; min-height: 100svh; padding: 24px; background: radial-gradient(ellipse at 50% 35%, #380e50 0%, #260d40 50%, #120c2b 100%); }
         .home-screen main { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
@@ -31,6 +31,11 @@
 <body class="home-screen">
     <main>
         <img class="home-logo" src="assets/ocean-rush-logo.png?v=2" alt="Ocean Rush logo featuring a neon jet ski rider and wave">
+        <div class="username-field">
+            <label for="username">USERNAME</label>
+            <input id="username" type="text" maxlength="16" placeholder="WaveRider" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="usernameHelp" data-clarity-mask="true">
+            <small id="usernameHelp">Choose a made-up rider name. Up to 16 letters, numbers, spaces, - or _.</small>
+        </div>
         <form action="game.html">
             <button type="submit">Singleplayer</button>
         </form>
@@ -38,5 +43,7 @@
             <button type="submit">Multiplayer</button>
         </form>
     </main>
+    <script src="scripts/profile.js?v=usernames-41"></script>
+    <script src="scripts/home.js?v=usernames-41"></script>
 </body>
 </html>

@@ -173,6 +173,27 @@ test('network PvP eliminates without respawn, broadcasts one winner, and permits
     assert.equal(world.players.get(late.welcome.id).spectator, false);
 });
 
+test('usernames are validated on profile registration and shared with peers, late joiners and winner results', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const named = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'profile', username: '  Wave Rider  ' }));
+    assert.equal((await named).you.username, 'Wave Rider');
+    const guest = await f.connectRequest('action=join&room=' + host.welcome.room);
+    assert.equal(guest.welcome.players.find(p => p.id === host.welcome.id).state.username, 'Wave Rider');
+    const guestNamed = message(guest.ws, 'personal');
+    guest.ws.send(JSON.stringify({ type: 'profile', username: 'Neon_7' }));
+    assert.equal((await guestNamed).you.username, 'Neon_7');
+    const shared = await message(host.ws, 'world');
+    assert.equal(shared.players.find(p => p.id === guest.welcome.id).state.username, 'Neon_7');
+    const world = f.rooms.get(host.welcome.room).world;
+    world.start(host.welcome.id);
+    world.damagePlayer(world.players.get(guest.welcome.id), 100, 'Hit', host.welcome.id); world.checkWinner();
+    const late = await f.connectRequest('action=join&room=' + host.welcome.room);
+    assert.equal(late.welcome.world.result.winnerLabel, 'Wave Rider');
+    assert.equal(late.welcome.players.find(p => p.id === host.welcome.id).state.username, 'Wave Rider');
+});
+
 test('relay forwards movement and shots, separates rooms, and reports disconnects', async t => {
     const f = await fixture(t);
     const a = await f.connect(), b = await f.connect(), c = await f.connect('other');

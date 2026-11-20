@@ -133,7 +133,9 @@ function createRelay() {
             try { msg = JSON.parse(data); } catch { return ws.close(1008, 'Invalid JSON'); }
             if (!msg || typeof msg !== 'object') return;
             if (msg.type === 'ping' && finite(msg.at, 0, 1e16)) return send(ws, { type: 'pong', at: msg.at });
-            if (msg.type === 'state') {
+            if (msg.type === 'profile' && world) {
+                if (world.setUsername(ws.id, msg.username)) send(ws, { type: 'personal', you: world.personal(ws.id) });
+            } else if (msg.type === 'state') {
                 const state = cleanState(msg.state);
                 if (!state) return;
                 ws.state = world ? world.updatePlayer(ws.id, state, msg.revision ?? 0, msg.slot, msg.controls) : state;

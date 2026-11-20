@@ -2,6 +2,7 @@
 class OceanMultiplayer {
     constructor(game) {
         this.game = game;
+        this.requestedName = window.OceanProfile?.load() || (game.username === 'Rider' ? '' : game.username) || '';
         this.peers = new Map();
         this.ready = false;
         this.playing = false;
@@ -106,6 +107,7 @@ class OceanMultiplayer {
                 this.receiveWorld(msg.world, now);
                 this.applyPersonal(msg.you, true);
                 this.ready = true;
+                this.send({ type: 'profile', username: this.requestedName });
                 this.tick();
                 for (const p of msg.players) this.receive(p.id, p.state, now);
                 this.syncLobby();
@@ -215,6 +217,7 @@ class OceanMultiplayer {
         }
         this.spectator = you.spectator === true;
         this.spectating = this.spectator || you.dead;
+        if (you.username) g.username = you.username;
         g.health = you.health;
         g.inventory = you.inventory;
         if (selection) g.selectedSlot = you.selectedSlot;
@@ -387,11 +390,18 @@ class OceanMultiplayer {
             if (!p.onFoot && !p.onPirateShip) g.drawJetSki(p, false);
             g.ellipse(p.x, p.y - 7, 9, 12, '#58f7bd');
             g.ellipse(p.x, p.y - 20, 7, 7, '#f2c4a0');
-            ctx.fillStyle = '#8fffd3'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-            ctx.fillText('Rider ' + id.slice(0, 4), p.x, p.y - 60);
             ctx.restore();
         }
 
+    }
+
+    drawNames() {
+        const now = performance.now(), g = this.game;
+        for (const [id, peer] of this.peers) {
+            if (peer.state.dead || peer.state.spectator) continue;
+            const p = this.position(peer, now);
+            if (g.isOnScreen(p)) g.drawPlayerName(p, p.username || 'Rider ' + id.slice(0, 4), '#8fffd3');
+        }
     }
 }
 window.OceanMultiplayer = OceanMultiplayer;

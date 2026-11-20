@@ -22,6 +22,7 @@ class Game {
         this.bestSurvivalDisplay = document.getElementById('bestSurvival');
         const multiplayerParams = new URLSearchParams(window.location?.search || '');
         this.isSingleplayer = !multiplayerParams.has('room') && multiplayerParams.get('action') !== 'host';
+        this.username = window.OceanProfile?.load() || 'Rider';
         this.survivalSeconds = 0;
         this.zoneDamageCarry = 0;
         this.bestSurvivalSeconds = 0;
@@ -2179,12 +2180,27 @@ class Game {
         this.drawCannonballs();
         this.drawFireworkEffects();
         this.drawSafeArea(ctx);
+        if (!this.multiplayer?.spectating && !this.gameOver) {
+            this.drawPlayerName({ ...this.rider, onFoot: this.onFoot }, this.username);
+        }
+        this.multiplayer?.drawNames();
         ctx.restore();
         if (this.invulnerable > 0 && !this.gameOver) {
             ctx.fillStyle = 'rgba(255, 106, 83, ' + (0.08 + Math.sin(this.time * 25) * 0.04) + ')';
             ctx.fillRect(0, 0, width, height);
         }
         this.drawMinimap();
+    }
+
+    drawPlayerName(player, username, color = '#8ff5ff') {
+        const ctx = this.ctx;
+        const y = player.y - (player.onFoot ? 34 : 60);
+        ctx.save();
+        ctx.font = 'bold 14px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.lineJoin = 'round'; ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10, 8, 28, 0.95)';
+        ctx.strokeText(username, player.x, y);
+        ctx.fillStyle = color; ctx.fillText(username, player.x, y);
+        ctx.restore();
     }
 
     drawMinimap() {

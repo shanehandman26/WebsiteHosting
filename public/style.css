@@ -1,4 +1,9 @@
 :root { color-scheme: dark; font-family: Arial, sans-serif; color: #f3eaff; background: #120c2b; }
+.username-field { display: grid; gap: 9px; width: min(100%, 340px); text-align: center; }
+.username-field label { color: #8fffd3; font-size: 14px; letter-spacing: 2px; }
+.username-field input { width: 100%; border: 1px solid #8ff5ff; border-radius: 8px; background: #190e3e; padding: 13px 16px; color: #fff; text-align: center; font: inherit; font-size: 18px; }
+.username-field input:focus-visible { outline: 2px solid #ff5acb; outline-offset: 3px; }
+.username-field small { color: #c2afd8; font-size: 12px; line-height: 1.5; }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 48px 24px; background: radial-gradient(ellipse at 50% 0, #33114c 0, #120c2b 65%); min-height: 100vh; }
 .game-shell { max-width: 1200px; margin: auto; }

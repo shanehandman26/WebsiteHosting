@@ -1,4 +1,5 @@
 const { Game } = require('../public/scripts/game.js');
+const { clean: cleanUsername } = require('../public/scripts/profile.js');
 
 // Run the existing game's simulation rules once per room. Rendering and local
 // steering stay in the browser; inventory, combat, terrain and ship ownership do not.
@@ -25,7 +26,7 @@ class RoomWorld extends Game {
 
     addPlayer(id) {
         const player = {
-            id, pose: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0 }, health: 100,
+            id, username: 'Rider ' + id.slice(0, 4), pose: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0 }, health: 100,
             gameOver: false, invulnerable: 3, inventory: Array(6).fill(null), selectedSlot: 0,
             onFoot: false, onPirateShip: false, parkedBoat: null, walkIsland: null,
             stowedCannonSlot: null, boardReadyAt: 0, riderStillTime: 0, zoneDamageCarry: 0,
@@ -37,6 +38,14 @@ class RoomWorld extends Game {
         this.players.set(id, player);
         if (!this.hostId) this.hostId = id;
         return player;
+    }
+
+    setUsername(id, value) {
+        const p = this.players.get(id);
+        if (!p || p.profileSet) return false;
+        p.username = cleanUsername(value) || p.username;
+        p.profileSet = true;
+        return true;
     }
 
     spawnPosition(excludeId, occupied = null) {
@@ -87,7 +96,7 @@ class RoomWorld extends Game {
         if (survivors.length > 1) return;
         const winner = survivors[0];
         this.result = { winnerId: winner?.id || null,
-            winnerLabel: winner ? 'Rider ' + winner.id.slice(0, 4) : null, round: this.roundNumber };
+            winnerLabel: winner?.username || null, round: this.roundNumber };
         this.phase = 'finished';
         for (const p of this.players.values()) p.controls = { x: 0, y: 0 };
     }
@@ -111,6 +120,7 @@ class RoomWorld extends Game {
         this.players.clear();
         for (const old of previous) {
             const p = this.addPlayer(old.id);
+            p.username = old.username; p.profileSet = old.profileSet;
             p.generation = old.generation; p.poseRevision = old.poseRevision;
         }
         this.hostId = hostId;
@@ -152,7 +162,7 @@ class RoomWorld extends Game {
     }
 
     stateFor(player) {
-        return { ...player.pose, onFoot: player.onFoot, onPirateShip: player.onPirateShip,
+        return { ...player.pose, username: player.username, onFoot: player.onFoot, onPirateShip: player.onPirateShip,
             boosting: player.boosting === true, dead: player.gameOver, spectator: player.spectator };
     }
 
@@ -340,7 +350,7 @@ class RoomWorld extends Game {
         this.usePlayer(player);
         this.health = Math.max(0, this.health - damage);
         this.blood.push({ x: player.pose.x, y: player.pose.y, life: this.bloodLifetime });
-        if (!this.health) this.finishRun(shooter ? cause + ' by Rider ' + shooter.slice(0, 4) : cause);
+        if (!this.health) this.finishRun(shooter ? cause + ' by ' + (this.players.get(shooter)?.username || 'Rider ' + shooter.slice(0, 4)) : cause);
         this.savePlayer();
         if (player.gameOver) { player.pose.vx = player.pose.vy = 0; player.controls = { x: 0, y: 0 }; }
     }
