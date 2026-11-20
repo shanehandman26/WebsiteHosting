@@ -777,6 +777,7 @@ class Game {
 
     steerPirateShip(dt) {
         const ship = this.pirateShip;
+        const frameX = ship.x, frameY = ship.y;
         if (!ship.route.length || ship.routeIslands !== this.islands) this.planPirateRoute();
         let travel = 95 * dt;
         for (let i = 0; i < 16 && ship.route.length && travel > 1e-6; i++) {
@@ -794,6 +795,12 @@ class Game {
             const heading = Math.atan2(dy, dx);
             const oldX = ship.x, oldY = ship.y, oldAngle = ship.angle;
             this.movePirateHull(x, y, heading, dt);
+            // Multiple waypoints in one update can make the resulting chord cut
+            // across a shore, even when each individual hull pose is safe.
+            if (!this.waterSegmentClear(frameX, frameY, ship.x, ship.y, ship.clearance)) {
+                Object.assign(ship, { x: oldX, y: oldY, angle: oldAngle });
+                break;
+            }
             const moved = Math.hypot(ship.x - oldX, ship.y - oldY);
             if (moved < 0.001) {
                 if (Math.abs(ship.angle - oldAngle) < 0.001) ship.route = [];

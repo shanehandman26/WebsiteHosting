@@ -197,3 +197,18 @@ test('stale position messages cannot undo a respawn or boarding correction', () 
     world.updatePlayer('a', { ...fresh.pose, x: 3005 }, fresh.poseRevision, 0);
     assert.equal(fresh.pose.x, 3005);
 });
+
+test('pirate movement cannot cut across a shoreline chord between multiple route waypoints', () => {
+    const original = Math.random;
+    let seed = 7;
+    Math.random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    try {
+        const world = new RoomWorld(), ship = world.pirateShip;
+        for (let i = 0; i < 800; i++) {
+            const x = ship.x, y = ship.y;
+            world.steerPirateShip(0.25);
+            assert.equal(world.waterSegmentClear(x, y, ship.x, ship.y, ship.clearance), true);
+            assert.equal(world.piratePoseClear(ship.x, ship.y, ship.angle), true);
+        }
+    } finally { Math.random = original; }
+});
