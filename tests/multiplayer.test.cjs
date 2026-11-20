@@ -24,26 +24,40 @@ function setup({ search = '?room=crew' } = {}) {
         setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {},
         setInterval: fn => { intervals.push(fn); return intervals.length; }, clearInterval() {}
     });
-    const game = { rider: { x: 3000, y: 2000, vx: 280, vy: 0, angle: 0 }, onFoot: false, onPirateShip: false, gameOver: false };
+    const game = {
+        rider: { x: 3000, y: 2000, vx: 280, vy: 0, angle: 0 }, onFoot: false, onPirateShip: false, gameOver: false,
+        inventory: Array(6).fill(null), selectedSlot: 0, time: 0, gameOverPanel: { hidden: true },
+        releaseControls() {}, updateCamera() {}, updateInventory() {}, updateHealthDisplay() {}, updatePickupPrompt() {},
+        finishRun(cause) { this.gameOver = true; this.gameOverPanel.hidden = false; this.cause = cause; }
+    };
     const client = new window.OceanMultiplayer(game);
     const socket = client.socket;
     if (socket) { socket.readyState = 1; socket.events.open(); }
     const receive = msg => client.socket.events.message({ data: JSON.stringify(msg) });
-    return { client, socket, receive, elements, timers, intervals, window, now: value => { now = value; } };
+    const welcome = (room = 'CREW', id = 'self') => receive({
+        type: 'welcome', id, room, players: [], protocol: 2, layout: [],
+        world: { time: 0, tick: 0, sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
+            projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [], pilotId: null },
+        you: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, generation: 0, poseRevision: 0,
+            inventory: Array(6).fill(null), selectedSlot: 0, health: 100, dead: false,
+            onFoot: false, onPirateShip: false, boardReadyIn: 0, survivalSeconds: 0 }
+    });
+    return { client, socket, receive, welcome, game, elements, timers, intervals, window, now: value => { now = value; } };
 }
 
 test('client joins the selected room, sends state and actions, and measures RTT', () => {
     const f = setup();
     assert.equal(new URL(f.socket.url).searchParams.get('room'), 'CREW');
     assert.equal(new URL(f.socket.url).searchParams.get('action'), 'join');
+    assert.equal(f.socket.sent.length, 0, 'Movement waits for the server world');
+    f.welcome();
     assert.equal(f.socket.sent[0].type, 'state');
     assert.equal(f.socket.sent[0].state.x, 3000);
-    f.receive({ type: 'welcome', id: 'self', room: 'CREW', players: [] });
     f.now(145);
     f.receive({ type: 'pong', at: 100 });
     assert.match(f.elements.networkStatus.textContent, /45 MS RTT/);
     f.client.shot(1, true);
-    assert.deepEqual(f.socket.sent.at(-1), { type: 'shot', angle: 1, cannon: true });
+    assert.deepEqual(f.socket.sent.at(-1), { type: 'action', action: 'fire', angle: 1, slot: 0 });
     f.socket.bufferedAmount = 10000;
     const count = f.socket.sent.length;
     f.client.tick();
@@ -88,7 +102,7 @@ test('hosting uses a server-assigned code, displays it, and reconnects to the sa
     assert.equal(new URL(f.socket.url).searchParams.get('action'), 'host');
     assert.equal(new URL(f.socket.url).searchParams.has('room'), false);
     assert.equal(f.elements.roomCodeHud.hidden, true);
-    f.receive({ type: 'welcome', room: 'ABCD', id: 'host', players: [] });
+    f.welcome('ABCD', 'host');
     assert.equal(f.client.room, 'ABCD');
     assert.equal(f.elements.roomCode.textContent, 'ABCD');
     assert.equal(f.elements.roomCodeHud.hidden, false);
@@ -123,4 +137,50 @@ test('invalid codes are rejected before connecting and join input normalizes fou
     });
     input.onInput();
     assert.equal(input.value, 'ABCD');
+});
+
+test('server health and inventory updates preserve immediate local steering until an explicit correction', () => {
+    const f = setup();
+    f.welcome();
+    f.game.rider.x = 3040;
+    const you = { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, generation: 0, poseRevision: 0,
+        inventory: [{ id: 'gun', durability: 12 }, null, null, null, null, null], selectedSlot: 0,
+        health: 75, dead: false, onFoot: false, onPirateShip: false, boardReadyIn: 0, survivalSeconds: 3 };
+    f.receive({ type: 'personal', you });
+    assert.equal(f.game.rider.x, 3040, 'Ordinary acknowledgements do not roll back movement');
+    assert.equal(f.game.health, 75);
+    assert.equal(f.game.inventory[0].id, 'gun');
+    const terrain = f.game.islands;
+    f.receive({ type: 'personal', you: { ...you, generation: 1, poseRevision: 1, health: 100 } });
+    assert.equal(f.game.rider.x, 3000);
+    assert.equal(f.game.health, 100);
+    assert.equal(f.game.islands, terrain, 'An individual respawn keeps room terrain');
+});
+
+test('shared enemy updates interpolate without moving the local rider and remove consumed coconuts', () => {
+    const f = setup();
+    f.welcome();
+    const coconut = { id: 'c1', x: 1, y: 1 };
+    f.client.layout = [{ coconuts: [coconut] }];
+    f.game.islands = [{ coconuts: [coconut], points: [[0, 0], [10, 0], [0, 10]] }];
+    const world = (time, x) => ({ time, tick: time * 60,
+        sharks: [{ id: 0, x, y: 2000, angle: 0, state: 'chase', timer: 0 }],
+        pirateShip: { x, y: 1000, angle: 0 }, projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [[]], pilotId: null });
+    f.client.worldSamples = [];
+    f.client.receiveWorld(world(0, 100), 100);
+    f.client.receiveWorld(world(0.1, 110), 200);
+    f.now(225); f.client.advance();
+    assert.equal(f.game.sharks[0].x, 105);
+    assert.equal(f.game.pirateShip.x, 105);
+    assert.equal(f.game.rider.x, 3000);
+    assert.equal(f.game.islands[0].coconuts.length, 0);
+    assert.equal(f.game.islands[0].points[1][0], 10, 'Shared pickup changes preserve polygon geometry');
+});
+
+test('an outdated relay cannot silently start a locally simulated multiplayer world', () => {
+    const f = setup();
+    f.receive({ type: 'welcome', room: 'CREW', id: 'self', players: [] });
+    assert.equal(f.client.ready, false);
+    assert.equal(f.client.closed, true);
+    assert.match(f.elements.roomFeedback.textContent, /shared-world/);
 });

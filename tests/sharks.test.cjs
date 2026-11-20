@@ -159,6 +159,21 @@ test('multiplayer hides the timer and does not change the singleplayer survival 
     assert.equal(storage.get('ocean-rush-best-survival'), '12');
 });
 
+test('shared-world mode keeps local steering but never advances local enemies, hits, or the room reset', () => {
+    const { game } = setup({ room: 'CREW' });
+    let respawns = 0;
+    game.multiplayer = { ready: true, worldTime: 0, controls: {}, action(name) { if (name === 'respawn') respawns++; } };
+    const entities = JSON.stringify({ sharks: game.sharks, ship: game.pirateShip, projectiles: game.projectiles });
+    game.keys.add('d');
+    const x = game.rider.x;
+    game.step(0.1);
+    assert.ok(game.rider.x > x);
+    assert.equal(JSON.stringify({ sharks: game.sharks, ship: game.pirateShip, projectiles: game.projectiles }), entities);
+    game.reset();
+    assert.equal(respawns, 1);
+    assert.equal(JSON.stringify({ sharks: game.sharks, ship: game.pirateShip, projectiles: game.projectiles }), entities);
+});
+
 test('invalid or blocked browser storage cannot break survival timing', () => {
     for (const saved of ['not-a-number', '-10', 'Infinity']) {
         const fixture = setup({ storage: new Map([['ocean-rush-best-survival', saved]]) });
@@ -417,7 +432,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=room-codes-34'));
+        assert.ok(html.includes('game.js?v=shared-world-35'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }

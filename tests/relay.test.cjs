@@ -69,6 +69,46 @@ test('a hosted room admits sixteen simultaneous players and refuses a seventeent
     for (const update of await Promise.all(deliveries)) assert.equal(update.id, host.welcome.id);
 });
 
+test('host, guests and late joiners receive one current world and player respawns preserve it', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const code = host.welcome.room;
+    const guest = await f.connectRequest('action=join&room=' + code);
+    assert.equal(host.welcome.protocol, 2);
+    assert.deepEqual(guest.welcome.layout, host.welcome.layout);
+    const world = f.rooms.get(code).world;
+    world.sharks[0].health = 1;
+    world.pirateShip.hits = 7;
+    world.floatingGuns = [{ id: 'race-gun', name: 'Spear gun', durability: 12, x: 3000, y: 2000 }];
+    const picked = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'interact', slot: 0 }));
+    assert.equal((await picked).you.inventory[0].id, 'race-gun');
+    const guestSnapshot = await message(guest.ws, 'world');
+    assert.equal(guestSnapshot.world.guns.length, 0);
+    assert.equal(guestSnapshot.world.sharks[0].health, 1);
+    assert.equal(guestSnapshot.world.pirateShip.hits, 7);
+    assert.equal(guestSnapshot.you.inventory.filter(Boolean).length, 0);
+    const late = await f.connectRequest('action=join&room=' + code);
+    assert.deepEqual(late.welcome.layout, host.welcome.layout);
+    assert.equal(late.welcome.world.guns.length, 0);
+    assert.equal(late.welcome.world.sharks[0].health, 1);
+    const gun = world.players.get(host.welcome.id).inventory[0];
+    const fired = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'fire', slot: 0, angle: 0 }));
+    assert.equal((await fired).you.inventory[0].durability, 11);
+    assert.equal(gun.durability, 11);
+    world.time += 0.21;
+    const respawned = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'respawn' }));
+    const response = await respawned;
+    assert.equal(response.you.generation, 1);
+    assert.equal(response.you.health, 100);
+    assert.equal(response.you.inventory.filter(Boolean).length, 0);
+    assert.equal(world.sharks[0].health, 1);
+    assert.equal(world.pirateShip.hits, 7);
+    assert.equal(world.players.get(guest.welcome.id).generation, 0);
+});
+
 test('relay forwards movement and shots, separates rooms, and reports disconnects', async t => {
     const f = await fixture(t);
     const a = await f.connect(), b = await f.connect(), c = await f.connect('other');

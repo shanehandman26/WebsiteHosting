@@ -1,5 +1,9 @@
 class Game {
-    constructor() {
+    constructor(options = {}) {
+        if (options.headless) {
+            this.initializeSimulation();
+            return;
+        }
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = this.canvas.getContext('2d');
         this.speedDisplay = document.getElementById('speed');
@@ -125,6 +129,28 @@ class Game {
         this.updateInventory();
         this.updatePickupPrompt();
         requestAnimationFrame(time => this.frame(time));
+    }
+
+    // The server uses the same terrain, navigation, weapon, and enemy rules without a DOM.
+    initializeSimulation() {
+        Object.assign(this, {
+            world: { width: 6000, height: 4000 }, territories: { columns: 5, rows: 2 },
+            canvas: { width: 1200, height: 660 }, camera: { x: 2400, y: 1670 },
+            rider: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0 },
+            margin: 60, boatRadius: 32, sharkClearance: 64, navigation: null,
+            sharkSpeed: 30 * 1609.344 / 3600 * 14.4,
+            gunMaxDurability: 12, nextGunId: 7, inventory: Array(6).fill(null), selectedSlot: 0,
+            projectiles: [], cannonballs: [], blood: [], bloodLifetime: 12, bloodAttractionRadius: 1400,
+            time: 0, survivalSeconds: 0, health: 100, gameOver: false, invulnerable: 0,
+            onFoot: false, onPirateShip: false, parkedBoat: null, walkIsland: null,
+            boardReadyAt: 0, riderStillTime: 0, zoneDamageCarry: 0,
+            boost: 100, boosting: false, nextShotAt: 0,
+            aim: { u: 0.5, v: 0.3, active: false }
+        });
+        this.floatingGuns = this.createGuns();
+        this.sharks = this.createSharks();
+        this.islands = this.createIslands();
+        this.pirateShip = this.createPirateShip();
     }
 
     handleKey(event, pressed) {
@@ -311,6 +337,7 @@ class Game {
     }
 
     interact() {
+        if (this.multiplayer) return this.multiplayer.action('interact');
         if (this.gameOver) return;
         if (this.eatCoconut()) return;
         if (this.onPirateShip) {
@@ -358,6 +385,7 @@ class Game {
     }
 
     canBoardPirateShip() {
+        if (this.multiplayer?.pilotId && this.multiplayer.pilotId !== this.multiplayer.id) return false;
         if (this.onFoot || this.onPirateShip || !this.pirateShip.disarmed) return false;
         const ship = this.pirateShip;
         const dx = this.rider.x - ship.x, dy = this.rider.y - ship.y;
@@ -434,6 +462,7 @@ class Game {
     }
 
     fireGun() {
+        if (this.multiplayer) return this.multiplayer.fire();
         const gun = this.inventory[this.selectedSlot];
         if (gun?.type === 'cannon') return this.firePlayerCannon();
         if (this.gameOver || !gun || !Number.isInteger(gun.durability) || gun.durability <= 0 || this.time < this.nextShotAt) return false;
@@ -603,6 +632,7 @@ class Game {
     }
 
     reset() {
+        if (this.multiplayer) return this.multiplayer.action('respawn');
         this.releaseControls();
         Object.assign(this.rider, { x: this.world.width / 2, y: this.world.height / 2, angle: 0 });
         this.onFoot = false; this.parkedBoat = null; this.walkIsland = null;
@@ -883,6 +913,7 @@ class Game {
         const x = ship.x - Math.cos(ship.angle) * 65 * ship.scaleX;
         const y = ship.y - Math.sin(ship.angle) * 65 * ship.scaleX;
         const angle = !ignoreFlash && this.time < ship.flashUntil ? ship.shotAngle :
+            this.multiplayer && !this.onPirateShip && Number.isFinite(ship.aimAngle) ? ship.aimAngle :
             this.onPirateShip ? (this.aim.active ? Math.atan2(
                 this.camera.y + this.aim.v * this.canvas.height - y,
                 this.camera.x + this.aim.u * this.canvas.width - x) : ship.angle) :
@@ -1273,7 +1304,7 @@ class Game {
     }
 
     safeAreaBounds() {
-        const progress = Math.min(1, Math.max(0, this.survivalSeconds / 180));
+        const progress = Math.min(1, Math.max(0, (this.multiplayer ? this.multiplayer.worldTime : this.survivalSeconds) / 180));
         // Use the standard game view so fullscreen changes cannot alter the safe area.
         const minWidth = Math.min(this.world.width, 1200 * 4);
         const minHeight = Math.min(this.world.height, 660 * 4);
@@ -1726,6 +1757,7 @@ class Game {
     }
 
     step(dt) {
+        if (this.multiplayer && !this.multiplayer.ready) return;
         this.time += dt;
         if (this.muzzleFlash && this.time >= this.muzzleFlash.startedAt + this.muzzleFlash.duration) this.muzzleFlash = null;
         for (const pool of this.blood) pool.life = Math.max(0, pool.life - dt);
@@ -1766,8 +1798,10 @@ class Game {
         const blend = 1 - Math.exp(-(length ? (this.boosting ? 12 : 5) : 4) * dt);
         const rider = this.rider;
         const backingOff = !!this.islandCollision;
+        if (this.multiplayer) this.multiplayer.controls = { x: dx, y: dy };
         if (this.onPirateShip) {
-            this.moveCapturedShip(dx, dy, dt);
+            if (this.multiplayer) this.syncPirateRider();
+            else this.moveCapturedShip(dx, dy, dt);
         } else if (this.onFoot) {
             this.walkOnIsland(dx, dy, dt);
         } else if (boardLocked) {
@@ -1813,11 +1847,13 @@ class Game {
         if (this.boost === 0) this.boosting = false;
         this.updateSpeedDisplay();
         this.updateBoostDisplay();
-        this.updateProjectiles(dt);
-        this.updatePirateShip(dt);
-        this.updateCannonballs(dt);
-        this.updateSharks(dt);
-        this.updateSafeArea(dt);
+        if (!this.multiplayer) {
+            this.updateProjectiles(dt);
+            this.updatePirateShip(dt);
+            this.updateCannonballs(dt);
+            this.updateSharks(dt);
+            this.updateSafeArea(dt);
+        }
         this.updateHealthDisplay();
         this.updatePickupPrompt();
     }
@@ -1825,6 +1861,7 @@ class Game {
     frame(time) {
         const elapsed = this.lastTime === null ? 0 : Math.min((time - this.lastTime) / 1000, 0.05);
         this.lastTime = time;
+        this.multiplayer?.advance();
         let remaining = elapsed;
         while (remaining > 0) {
             const dt = Math.min(remaining, 1 / 120);
@@ -1858,6 +1895,7 @@ class Game {
         const ctx = this.ctx;
         const { width, height } = this.canvas;
         this.drawSynthwaveOcean();
+        if (this.multiplayer && !this.multiplayer.ready) return;
         // Draw only the visible slice of the larger ocean in world coordinates.
         ctx.save();
         ctx.translate(-this.camera.x, -this.camera.y);
@@ -2200,4 +2238,5 @@ class Game {
     }
 }
 
-document.myGame = new Game();
+if (typeof module !== 'undefined' && module.exports) module.exports = { Game };
+else document.myGame = new Game();

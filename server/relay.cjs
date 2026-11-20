@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, randomInt } = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
+const { RoomWorld } = require('./room-world.cjs');
 
 const PUBLIC = path.resolve(__dirname, '../public');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -114,9 +115,14 @@ function createRelay() {
         ws.state = null;
         ws.tokens = 90; ws.refillAt = Date.now(); ws.lastShot = 0;
         peers.add(ws);
+        if (hosted && !peers.world) peers.world = new RoomWorld();
+        const world = peers.world;
+        if (world) world.addPlayer(ws.id);
         const broadcast = message => { for (const peer of peers) if (peer !== ws) send(peer, message); };
         send(ws, { type: 'welcome', id: ws.id, room,
-            players: [...peers].filter(p => p !== ws && p.state).map(p => ({ id: p.id, state: p.state })) });
+            ...(world ? { protocol: 2, layout: world.layout, world: world.snapshot(), you: world.personal(ws.id) } : {}),
+            players: [...peers].filter(p => p !== ws && (p.state || world)).map(p => ({ id: p.id,
+                state: world ? world.stateFor(world.players.get(p.id)) : p.state })) });
         ws.on('pong', () => { ws.alive = true; });
         ws.on('error', () => {});
         ws.on('message', (data, binary) => {
@@ -130,9 +136,12 @@ function createRelay() {
             if (msg.type === 'state') {
                 const state = cleanState(msg.state);
                 if (!state) return;
-                ws.state = state;
-                broadcast({ type: 'state', id: ws.id, state });
-            } else if (msg.type === 'shot' && ws.state && !ws.state.dead && now - ws.lastShot >= 150 &&
+                ws.state = world ? world.updatePlayer(ws.id, state, msg.revision ?? 0, msg.slot, msg.controls) : state;
+                if (!ws.state) return;
+                broadcast({ type: 'state', id: ws.id, state: ws.state });
+            } else if (msg.type === 'action' && world) {
+                if (world.action(ws.id, msg)) send(ws, { type: 'personal', you: world.personal(ws.id) });
+            } else if (msg.type === 'shot' && !world && ws.state && !ws.state.dead && now - ws.lastShot >= 150 &&
                 finite(msg.angle, -1e6, 1e6)) {
                 ws.lastShot = now;
                 broadcast({ type: 'shot', id: ws.id, x: ws.state.x, y: ws.state.y,
@@ -141,6 +150,7 @@ function createRelay() {
         });
         ws.on('close', () => {
             peers.delete(ws);
+            world?.removePlayer(ws.id);
             broadcast({ type: 'leave', id: ws.id });
             if (!peers.size) {
                 if (peers.hosted) peers.expiresAt = Date.now() + 60000;
@@ -148,6 +158,29 @@ function createRelay() {
             }
         });
     });
+    // Fixed 60 Hz physics, 20 Hz snapshots. An empty room is retained but paused.
+    let lastStep = Date.now();
+    let accumulator = 0, snapshotClock = 0;
+    const simulation = setInterval(() => {
+        const now = Date.now();
+        accumulator += Math.min(0.1, (now - lastStep) / 1000); lastStep = now;
+        while (accumulator >= 1 / 60) {
+            for (const peers of rooms.values()) if (peers.size && peers.world) peers.world.stepWorld(1 / 60);
+            accumulator -= 1 / 60;
+            snapshotClock += 1 / 60;
+        }
+        if (snapshotClock >= 0.05) {
+            snapshotClock %= 0.05;
+            for (const peers of rooms.values()) {
+                if (!peers.size || !peers.world) continue;
+                const world = peers.world;
+                const snapshot = world.snapshot();
+                const players = [...world.players.values()].map(p => ({ id: p.id, state: world.stateFor(p) }));
+                for (const peer of peers) send(peer, { type: 'world', world: snapshot, players, you: world.personal(peer.id) });
+            }
+        }
+    }, 1000 / 30);
+    simulation.unref();
     const heartbeat = setInterval(() => {
         expireRooms();
         for (const ws of wss.clients) {
@@ -156,7 +189,7 @@ function createRelay() {
         }
     }, 15000);
     heartbeat.unref();
-    server.on('close', () => clearInterval(heartbeat));
+    server.on('close', () => { clearInterval(heartbeat); clearInterval(simulation); });
     return { server, wss, rooms };
 }
 

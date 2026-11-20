@@ -56,8 +56,12 @@ test('a guest joining a hosted code receives the host movement and shots while o
     host.emit('message', Buffer.from(JSON.stringify({ type: 'state', state })), false);
     assert.equal(guest.messages.at(-1).type, 'state');
     assert.equal(guest.messages.at(-1).state.x, 3000);
-    host.emit('message', Buffer.from(JSON.stringify({ type: 'shot', angle: 0 })), false);
-    assert.equal(guest.messages.at(-1).type, 'shot');
+    const world = relay.rooms.get(code).world;
+    world.players.get(host.id).inventory[0] = { id: 'test-gun', name: 'Spear gun', durability: 12 };
+    host.emit('message', Buffer.from(JSON.stringify({ type: 'action', action: 'fire', slot: 0, angle: 0 })), false);
+    assert.equal(world.projectiles.length, 1);
+    assert.equal(world.projectiles[0].shooter, host.id);
+    assert.equal(world.players.get(host.id).inventory[0].durability, 11);
     assert.equal(other.messages.length, 1);
     host.close();
     assert.equal(guest.messages.at(-1).type, 'leave');

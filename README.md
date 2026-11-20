@@ -245,16 +245,41 @@ After joining, the game URL also contains the code and can be shared directly.
 An empty hosted room remains available for 60 seconds to allow reconnecting.
 Singleplayer does not open a relay connection.
 
-Room codes require both the updated public files and `server/relay.cjs`.
+Shared rooms require the updated public files, `server/relay.cjs`, and
+`server/room-world.cjs`.
 Restart the relay after updating the server; publishing Firebase Hosting alone
 does not update the room service. Older unnamed-room clients remain supported
 by the relay, but the new host/join flow uses four-letter codes exclusively.
 
-This is a movement/action relay prototype: riders see each other's positions
-and cosmetic spear/cannon shots. Sharks, islands, pickups, pirate ships, health,
-and collision/damage still simulate independently in each browser; this is not
-yet a shared authoritative world or PvP combat. Island layouts can differ.
-A shared simulation is required before adding competitive damage or shared loot.
+Each room now owns **one server-controlled world**. The server creates island
+polygons once, and every device receives those exact polygons for drawing,
+shorelines, walking, and collisions. Sharks, pirate position and attacks, blood,
+projectiles, enemy health, kills, and shark respawns are shared. A late joiner
+receives the current world, including defeated enemies and collected pickups.
+The simulation continues if the host leaves and another player remains.
+
+Sharks target the nearest living rider who is not protected aboard the pirate
+ship. Normal detection uses a fixed 900-pixel radius; fresh blood extends it to
+1400 pixels. Pirate attacks target the nearest living player within 1200 pixels.
+These room-wide distances replace viewport-dependent detection in multiplayer,
+so a different screen size cannot change enemy behavior. Singleplayer keeps its
+existing rules. Sharks still respawn after ten seconds; sixteen spear hits
+disarm the pirate ship, which can then have **one pilot at a time**. Captured
+ship movement and cannon fire are shared. Player weapons do not damage players.
+
+Guns and coconuts are shared pickups: the server grants an item to only one
+player, removes it for everyone, checks inventory and firing cooldowns, and
+resolves damage once. Broken guns create one shared replacement. Coconut
+healing affects only the player who eats it. Guns carried when leaving or
+respawning return to the pickup pool; carried coconuts are lost.
+
+**Ride again** and **Reset rider** respawn only that player, clear their
+inventory, and restore health/boost with three seconds of shark protection.
+They do not regenerate islands or reset enemies, other players, or the shared
+safe-area clock. The room pauses while empty and expires after 60 seconds.
+Reconnecting enters the existing world as a fresh rider; persistent player
+identities and server-restart recovery are not implemented. Fish and wake are
+cosmetic local effects.
 
 The browser connects directly to `wss://shaneh.api.codehw.net/multiplayer` from
 either the server-hosted game or Firebase Hosting. The public endpoint is in
@@ -262,13 +287,17 @@ either the server-hosted game or Firebase Hosting. The public endpoint is in
 messages; it does not forward arbitrary web traffic. Caddy handles HTTPS,
 WebSocket upgrades, and CORS; Node serves HTTP on `process.env.PORT`.
 
-Local controls run immediately. Movement sends at 30 Hz, is forwarded immediately
-with TCP_NODELAY and compression disabled, and renders other riders with a 50 ms
-interpolation buffer and at most 100 ms prediction. Buffered stale movement is
-dropped, slow receivers reconnect, dead connections receive heartbeat checks,
+Local steering and island collisions run immediately. Player movement sends
+at 30 Hz with TCP_NODELAY and compression disabled. The server simulates enemies
+and combat at 60 Hz and sends world snapshots at 20 Hz. Browsers interpolate
+enemy and projectile positions with a 75 ms buffer; other riders use a 50 ms
+buffer and at most 100 ms prediction. Server damage and pickup confirmations
+arrive over the network. Snapshots do not overwrite ordinary local steering;
+server-issued position revisions handle boarding, respawn, and corrections.
+Buffered stale movement is dropped, slow receivers reconnect, dead connections receive heartbeat checks,
 and clients retry with backoff. The status shows measured browser-to-relay
 **round-trip** time, not one-way latency or player-to-player delay. Physical
-distance and network quality still affect latency. No gameplay data is persisted.
+distance and network quality still affect latency. World data is held only in server memory.
 
 ### Run and maintain the server
 
