@@ -74,9 +74,11 @@ test('host, guests and late joiners receive one current world and player respawn
     const host = await f.connectRequest('action=host');
     const code = host.welcome.room;
     const guest = await f.connectRequest('action=join&room=' + code);
-    assert.equal(host.welcome.protocol, 2);
+    assert.equal(host.welcome.protocol, 3);
     assert.deepEqual(guest.welcome.layout, host.welcome.layout);
     const world = f.rooms.get(code).world;
+    world.start(host.welcome.id);
+    for (const p of world.players.values()) Object.assign(p.pose, { x: 3000, y: 2000 });
     world.sharks[0].health = 1;
     world.pirateShip.hits = 7;
     world.floatingGuns = [{ id: 'race-gun', name: 'Spear gun', durability: 12, x: 3000, y: 2000 }];
@@ -101,12 +103,36 @@ test('host, guests and late joiners receive one current world and player respawn
     const respawned = message(host.ws, 'personal');
     host.ws.send(JSON.stringify({ type: 'action', action: 'respawn' }));
     const response = await respawned;
-    assert.equal(response.you.generation, 1);
+    assert.equal(response.you.generation, 2);
     assert.equal(response.you.health, 100);
     assert.equal(response.you.inventory.filter(Boolean).length, 0);
     assert.equal(world.sharks[0].health, 1);
     assert.equal(world.pirateShip.hits, 7);
-    assert.equal(world.players.get(guest.welcome.id).generation, 0);
+    assert.equal(world.players.get(guest.welcome.id).generation, 1);
+});
+
+test('network lobby stays paused until the host starts, then broadcasts scattered spawns to everyone', async t => {
+    const f = await fixture(t);
+    const host = await f.connectRequest('action=host');
+    const code = host.welcome.room;
+    const guest = await f.connectRequest('action=join&room=' + code);
+    assert.equal(host.welcome.world.phase, 'waiting');
+    assert.equal(host.welcome.world.hostId, host.welcome.id);
+    guest.ws.send(JSON.stringify({ type: 'action', action: 'start' }));
+    const waiting = await message(guest.ws, 'world');
+    assert.equal(waiting.world.phase, 'waiting');
+    assert.equal(waiting.world.time, 0);
+    const started = message(host.ws, 'personal');
+    host.ws.send(JSON.stringify({ type: 'action', action: 'start' }));
+    assert.equal((await started).you.generation, 1);
+    const snapshot = await message(guest.ws, 'world');
+    assert.equal(snapshot.world.phase, 'running');
+    assert.equal(snapshot.players.length, 2);
+    const [a, b] = snapshot.players.map(p => p.state);
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 500);
+    const late = await f.connectRequest('action=join&room=' + code);
+    assert.equal(late.welcome.world.phase, 'running');
+    assert.ok(Math.hypot(late.welcome.you.x - a.x, late.welcome.you.y - a.y) >= 500);
 });
 
 test('relay forwards movement and shots, separates rooms, and reports disconnects', async t => {

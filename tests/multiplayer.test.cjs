@@ -5,8 +5,8 @@ const vm = require('node:vm');
 
 function setup({ search = '?room=crew' } = {}) {
     let now = 100;
-    const elements = Object.fromEntries(['networkStatus', 'roomCodeHud', 'roomCode', 'roomFeedback', 'roomLobbyLink']
-        .map(id => [id, { hidden: true }]));
+    const elements = Object.fromEntries(['networkStatus', 'roomCodeHud', 'roomCode', 'roomFeedback', 'roomLobbyLink', 'roomWaiting', 'startGameButton', 'waitingPlayers', 'waitingMessage', 'minimapLegend']
+        .map(id => [id, { hidden: true, addEventListener(name, fn) { this[name] = fn; } }]));
     const timers = [], intervals = [];
     class Socket {
         static OPEN = 1;
@@ -34,9 +34,9 @@ function setup({ search = '?room=crew' } = {}) {
     const socket = client.socket;
     if (socket) { socket.readyState = 1; socket.events.open(); }
     const receive = msg => client.socket.events.message({ data: JSON.stringify(msg) });
-    const welcome = (room = 'CREW', id = 'self') => receive({
-        type: 'welcome', id, room, players: [], protocol: 2, layout: [],
-        world: { time: 0, tick: 0, sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
+    const welcome = (room = 'CREW', id = 'self', phase = 'running', hostId = id) => receive({
+        type: 'welcome', id, room, players: [], protocol: 3, layout: [],
+        world: { phase, hostId, time: 0, tick: 0, sharks: [], pirateShip: { x: 3000, y: 1000, angle: 0 },
             projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [], pilotId: null },
         you: { x: 3000, y: 2000, vx: 0, vy: 0, angle: 0, generation: 0, poseRevision: 0,
             inventory: Array(6).fill(null), selectedSlot: 0, health: 100, dead: false,
@@ -177,10 +177,78 @@ test('shared enemy updates interpolate without moving the local rider and remove
     assert.equal(f.game.islands[0].points[1][0], 10, 'Shared pickup changes preserve polygon geometry');
 });
 
+test('shared chest snapshots update opened lids while retaining their layout and empty contents', () => {
+    const f = setup(); f.welcome();
+    const chest = { id: 'chest-0', x: 20, y: 10, opened: false, items: [] };
+    f.client.layout = [{ coconuts: [], chests: [chest] }];
+    f.game.islands = [{ coconuts: [], chests: [chest] }];
+    f.client.receiveWorld({ phase: 'running', hostId: 'self', time: 1, tick: 60,
+        sharks: [], pirateShip: { x: 1000, y: 1000, angle: 0 }, projectiles: [], cannonballs: [],
+        guns: [], blood: [], coconuts: [[]], chests: [[{ id: 'chest-0', opened: true }]] }, 100);
+    const visible = f.game.islands[0].chests[0];
+    assert.equal(visible.opened, true);
+    assert.equal(visible.x, 20); assert.equal(visible.y, 10);
+    assert.equal(visible.items.length, 0);
+    assert.equal(chest.opened, false);
+});
+
 test('an outdated relay cannot silently start a locally simulated multiplayer world', () => {
     const f = setup();
     f.receive({ type: 'welcome', room: 'CREW', id: 'self', players: [] });
     assert.equal(f.client.ready, false);
     assert.equal(f.client.closed, true);
     assert.match(f.elements.roomFeedback.textContent, /shared-world/);
+});
+
+test('the waiting lobby offers Start Game only to the host and blocks other game actions', () => {
+    const f = setup();
+    f.welcome('CREW', 'host', 'waiting');
+    assert.equal(f.client.playing, false);
+    assert.equal(f.elements.roomWaiting.hidden, false);
+    assert.equal(f.elements.startGameButton.hidden, false);
+    assert.equal(f.socket.sent.some(m => m.type === 'state'), false);
+    assert.equal(f.client.action('interact'), false);
+    assert.equal(f.client.action('respawn'), false);
+    f.elements.startGameButton.click();
+    assert.equal(f.socket.sent.at(-1).action, 'start');
+    assert.equal(f.elements.startGameButton.disabled, true);
+    const guest = setup();
+    guest.welcome('CREW', 'guest', 'waiting', 'host');
+    assert.equal(guest.elements.startGameButton.hidden, true);
+    const count = guest.socket.sent.length;
+    guest.elements.startGameButton.click();
+    assert.equal(guest.socket.sent.length, count);
+});
+
+test('the server start snapshot dismisses the lobby and applies the assigned spawn before sending movement', () => {
+    const f = setup();
+    f.welcome('CREW', 'host', 'waiting');
+    f.receive({ type: 'world',
+        world: { phase: 'running', hostId: 'host', time: 0, tick: 0, sharks: [],
+            pirateShip: { x: 3000, y: 1000, angle: 0 }, projectiles: [], cannonballs: [], blood: [], guns: [], coconuts: [] },
+        players: [{ id: 'host', state: { x: 720, y: 800 } }],
+        you: { x: 720, y: 800, vx: 0, vy: 0, angle: 0, generation: 1, poseRevision: 1,
+            inventory: Array(6).fill(null), selectedSlot: 0, health: 100, dead: false,
+            onFoot: false, onPirateShip: false, boardReadyIn: 0, survivalSeconds: 0 }
+    });
+    assert.equal(f.client.playing, true);
+    assert.equal(f.elements.roomWaiting.hidden, true);
+    assert.equal(f.elements.minimapLegend.hidden, false);
+    assert.equal(f.game.rider.x, 720);
+    f.client.tick();
+    assert.equal(f.socket.sent.at(-1).type, 'state');
+    assert.equal(f.socket.sent.at(-1).state.x, 720);
+    assert.equal(f.socket.sent.at(-1).revision, 1);
+});
+
+test('the minimap includes distant living players and removes dead or disconnected players', () => {
+    const f = setup();
+    f.welcome();
+    const state = { x: 5200, y: 3100, vx: 0, vy: 0, angle: 0, dead: false };
+    f.receive({ type: 'state', id: 'far', state });
+    f.receive({ type: 'state', id: 'dead', state: { ...state, dead: true } });
+    assert.equal(f.client.minimapPlayers().length, 1);
+    assert.equal(f.client.minimapPlayers()[0].x, 5200);
+    f.receive({ type: 'leave', id: 'far' });
+    assert.equal(f.client.minimapPlayers().length, 0);
 });

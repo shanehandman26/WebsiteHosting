@@ -11,6 +11,8 @@ class RoomWorld extends Game {
     constructor() {
         super({ headless: true });
         this.players = new Map();
+        this.phase = 'waiting';
+        this.hostId = null;
         this.pilotId = null;
         this.tickNumber = 0;
         this.nextEntityId = 1;
@@ -28,7 +30,46 @@ class RoomWorld extends Game {
             controls: { x: 0, y: 0 }, lastInputAt: this.time, lastActionAt: -1
         };
         this.players.set(id, player);
+        if (!this.hostId) this.hostId = id;
+        if (this.phase === 'running') Object.assign(player.pose, this.spawnPosition(id));
         return player;
+    }
+
+    spawnPosition(excludeId, occupied = null) {
+        const positions = occupied || [...this.players.values()]
+            .filter(p => p.id !== excludeId && !p.gameOver).map(p => p.pose);
+        // Stay inside even the final safe area, with room for the entire jet ski.
+        const candidates = [];
+        for (let y = 800; y <= 3200; y += 160) {
+            for (let x = 720; x <= 5280; x += 160) {
+                if (this.pointOnLand(x, y, this.boatRadius + 40) ||
+                    Math.hypot(x - this.pirateShip.x, y - this.pirateShip.y) < 280 ||
+                    this.sharks.some(s => s.state !== 'dead' && Math.hypot(x - s.x, y - s.y) < 220)) continue;
+                candidates.push({ x, y });
+            }
+        }
+        // Terrain generation always leaves central open water; retain a safe fallback.
+        if (!candidates.length) candidates.push(this.randomWaterPoint(120));
+        if (!positions.length) return candidates[Math.floor(Math.random() * candidates.length)];
+        let best = candidates[0], bestDistance = -1;
+        for (const point of candidates) {
+            const distance = Math.min(...positions.map(p => Math.hypot(point.x - p.x, point.y - p.y)));
+            if (distance > bestDistance) { best = point; bestDistance = distance; }
+        }
+        return best;
+    }
+
+    start(id) {
+        if (this.phase !== 'waiting' || id !== this.hostId) return false;
+        const occupied = [];
+        for (const player of this.players.values()) {
+            Object.assign(player.pose, this.spawnPosition(player.id, occupied), { vx: 0, vy: 0, angle: 0 });
+            occupied.push(player.pose);
+            player.poseRevision++; player.generation++;
+            player.controls = { x: 0, y: 0 };
+        }
+        this.phase = 'running';
+        return true;
     }
 
     dropInventory(player) {
@@ -40,12 +81,13 @@ class RoomWorld extends Game {
         if (stowed && !stowed.type) this.floatingGuns.push({ ...stowed, ...this.randomWaterPoint(120) });
     }
 
-    removePlayer(id) {
+    removePlayer(id, preserveHost = false) {
         const player = this.players.get(id);
         if (!player) return;
         this.dropInventory(player);
         if (this.pilotId === id) { this.pilotId = null; this.pirateShip.cruiseDirection = null; }
         this.players.delete(id);
+        if (!preserveHost && this.hostId === id) this.hostId = this.players.keys().next().value || null;
     }
 
     usePlayer(player) {
@@ -80,7 +122,7 @@ class RoomWorld extends Game {
 
     updatePlayer(id, state, revision, selectedSlot, controls) {
         const p = this.players.get(id);
-        if (!p || p.gameOver || revision !== p.poseRevision) return p && this.stateFor(p);
+        if (!p || this.phase !== 'running' || p.gameOver || revision !== p.poseRevision) return p && this.stateFor(p);
         if (Number.isInteger(selectedSlot) && selectedSlot >= 0 && selectedSlot < 6) p.selectedSlot = selectedSlot;
         p.controls = { x: Number.isFinite(controls?.x) ? Math.max(-1, Math.min(1, controls.x)) : 0,
             y: Number.isFinite(controls?.y) ? Math.max(-1, Math.min(1, controls.y)) : 0 };
@@ -106,17 +148,26 @@ class RoomWorld extends Game {
     action(id, message) {
         const p = this.players.get(id);
         if (!p) return false;
+        if (message.action === 'start') return this.start(id);
+        if (this.phase !== 'running') return false;
         if (message.action === 'respawn') {
             if (this.time - p.lastActionAt < 0.2) return false;
             const revision = p.poseRevision + 1, generation = p.generation + 1;
-            this.removePlayer(id);
+            this.removePlayer(id, true);
             const fresh = this.addPlayer(id);
             fresh.poseRevision = revision; fresh.generation = generation; fresh.lastActionAt = this.time;
             return true;
         }
-        if (p.gameOver || !['interact', 'fire'].includes(message.action)) return false;
+        if (p.gameOver || !['interact', 'fire', 'open_chest'].includes(message.action)) return false;
         if (Number.isInteger(message.slot) && message.slot >= 0 && message.slot < 6) p.selectedSlot = message.slot;
         this.usePlayer(p);
+        if (message.action === 'open_chest') {
+            if (this.time - p.lastActionAt < 0.15) return false;
+            p.lastActionAt = this.time;
+            const opened = super.openChest();
+            this.savePlayer();
+            return opened;
+        }
         if (message.action === 'interact') {
             if (this.time - p.lastActionAt < 0.15) return false;
             p.lastActionAt = this.time;
@@ -190,6 +241,7 @@ class RoomWorld extends Game {
     }
 
     stepWorld(dt) {
+        if (this.phase !== 'running') return;
         this.time += dt; this.tickNumber++;
         this.blood = this.blood.filter(pool => (pool.life -= dt) > 0);
         for (const p of this.players.values()) {
@@ -263,11 +315,12 @@ class RoomWorld extends Game {
 
     snapshot() {
         for (const entity of [...this.projectiles, ...this.cannonballs]) entity.id ??= this.nextEntityId++;
-        return { protocol: 2, tick: this.tickNumber, time: this.time,
+        return { protocol: 3, phase: this.phase, hostId: this.hostId, tick: this.tickNumber, time: this.time,
             sharks: this.sharks.map(visibleEntity), pirateShip: visibleEntity(this.pirateShip),
             pilotId: this.pilotId, projectiles: this.projectiles, cannonballs: this.cannonballs,
             blood: this.blood, guns: this.floatingGuns,
-            coconuts: this.islands.map(island => island.coconuts.map(c => c.id)) };
+            coconuts: this.islands.map(island => island.coconuts.map(c => c.id)),
+            chests: this.islands.map(island => (island.chests || []).map(({ id, opened }) => ({ id, opened }))) };
     }
 }
 

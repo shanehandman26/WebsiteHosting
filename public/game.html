@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ocean Rush — Jet Ski</title>
-    <link rel="stylesheet" href="style.css?v=shared-world-35">
+    <link rel="stylesheet" href="style.css?v=host-start-37">
     <script type="text/javascript">
     (function(c,l,a,r,i,t,y){
         c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
@@ -52,9 +52,20 @@
             <div id="roomCodeHud" class="room-code" hidden aria-label="Multiplayer room code">
                 <span>ROOM</span><strong id="roomCode">----</strong>
             </div>
+            <section id="roomWaiting" class="room-waiting" aria-labelledby="roomWaitingTitle" hidden>
+                <div>
+                    <p class="eyebrow">MULTIPLAYER ROOM</p>
+                    <h2 id="roomWaitingTitle">GET READY TO RIDE</h2>
+                    <p id="waitingPlayers" role="status">Connecting to the room…</p>
+                    <p id="waitingMessage">Waiting for the host to start the game.</p>
+                    <p>Share the four-letter code below so your friends can join.</p>
+                    <button id="startGameButton" type="button" hidden>Start Game</button>
+                </div>
+            </section>
             <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="Enter fullscreen" aria-pressed="false">⛶ Fullscreen</button>
             <aside class="minimap" aria-label="Ocean minimap">
-                <canvas id="minimapCanvas" width="240" height="160" aria-label="Your position, the pirate ship, and your current view"></canvas>
+                <canvas id="minimapCanvas" width="240" height="160" aria-label="Your position, other players, the pirate ship, and your current view"></canvas>
+                <p id="minimapLegend" class="minimap-legend" hidden>Cyan: you · Green: riders</p>
             </aside>
             <div class="fullscreen-touch-controls" aria-label="Fullscreen touch controls">
                 <button id="fullscreen-moveUp" type="button" aria-label="Hold to move up">↑</button>
@@ -83,7 +94,7 @@
         <p class="hint">Each ocean territory has a patrolling shark. Staying still draws your area's guard toward you. Use Q to escape.</p>
     </main>
     <script src="scripts/relay-config.js?v=relay-1"></script>
-    <script src="scripts/multiplayer.js?v=shared-world-35"></script>
-    <script src="scripts/game.js?v=shared-world-35"></script>
+    <script src="scripts/multiplayer.js?v=host-start-37"></script>
+    <script src="scripts/game.js?v=chest-distribution-38"></script>
 </body>
 </html>

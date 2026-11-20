@@ -7,9 +7,67 @@ function fixture() {
     world.islands = []; world.navigation = null; world.floatingGuns = [];
     world.pirateShip.x = 1000; world.pirateShip.y = 500;
     const a = world.addPlayer('a'), b = world.addPlayer('b');
+    world.phase = 'running'; // Combat fixtures choose exact positions; lobby tests exercise start().
     a.invulnerable = b.invulnerable = 0;
     return { world, a, b };
 }
+
+test('only the host can start, and the lobby blocks movement, combat and the game clock', () => {
+    const world = new RoomWorld();
+    const host = world.addPlayer('host'), guest = world.addPlayer('guest');
+    const before = JSON.stringify(world.snapshot());
+    world.stepWorld(30);
+    world.updatePlayer('guest', { ...guest.pose, x: 3100 }, 0, 0);
+    for (const action of ['start', 'fire', 'interact', 'respawn']) {
+        assert.equal(world.action('guest', { action, slot: 0, angle: 0 }), false);
+    }
+    assert.equal(guest.pose.x, 3000);
+    assert.equal(world.time, 0);
+    assert.equal(JSON.stringify(world.snapshot()), before);
+    assert.equal(world.action('host', { action: 'start' }), true);
+    assert.equal(world.phase, 'running');
+    assert.equal(host.generation, 1);
+    assert.equal(host.poseRevision, 1);
+    const position = { ...host.pose };
+    assert.equal(world.action('host', { action: 'start' }), false);
+    assert.deepEqual(host.pose, position);
+    world.stepWorld(1 / 60);
+    assert.ok(world.time > 0);
+});
+
+test('sixteen players start in separated, safe map locations; late join and respawn also scatter', () => {
+    const world = new RoomWorld();
+    for (let i = 0; i < 16; i++) world.addPlayer('p' + i);
+    world.start('p0');
+    const players = [...world.players.values()];
+    for (let i = 0; i < players.length; i++) {
+        const p = players[i];
+        assert.equal(world.pointOnLand(p.pose.x, p.pose.y, world.boatRadius + 40), false);
+        assert.ok(p.pose.x >= 600 && p.pose.x <= 5400 && p.pose.y >= 680 && p.pose.y <= 3320);
+        for (const shark of world.sharks) assert.ok(Math.hypot(p.pose.x - shark.x, p.pose.y - shark.y) >= 220);
+        for (let j = i + 1; j < players.length; j++) {
+            assert.ok(Math.hypot(p.pose.x - players[j].pose.x, p.pose.y - players[j].pose.y) >= 500);
+        }
+    }
+    const host = world.hostId;
+    world.action(host, { action: 'respawn' });
+    assert.equal(world.hostId, host, 'Respawning must not transfer host privileges');
+    world.removePlayer('p15');
+    const late = world.addPlayer('late');
+    for (const p of world.players.values()) if (p.id !== late.id) {
+        assert.ok(Math.hypot(p.pose.x - late.pose.x, p.pose.y - late.pose.y) >= 500);
+    }
+});
+
+test('the next connected player becomes host when the host leaves the lobby', () => {
+    const world = new RoomWorld();
+    world.addPlayer('host'); world.addPlayer('next');
+    world.removePlayer('host');
+    assert.equal(world.phase, 'waiting');
+    assert.equal(world.hostId, 'next');
+    assert.equal(world.start('host'), false);
+    assert.equal(world.start('next'), true);
+});
 
 test('one room owns immutable island geometry and current world data for late joiners', () => {
     const world = new RoomWorld();
@@ -26,6 +84,27 @@ test('one room owns immutable island geometry and current world data for late jo
     assert.equal(late.health, 100);
     assert.equal(JSON.stringify(world.islands.map(({ coconuts, ...island }) => island)), terrain);
     assert.equal(snapshot.sharks[0].routeIslands, undefined, 'Navigation caches are not sent over the network');
+});
+
+test('opening an empty chest is server-owned and shared with every player and late joiner', () => {
+    const world = new RoomWorld();
+    const a = world.addPlayer('a'), b = world.addPlayer('b');
+    world.start('a');
+    const index = world.islands.findIndex(island => island.chests.length > 0);
+    const island = world.islands[index], chest = island.chests[0];
+    for (const p of [a, b]) {
+        p.onFoot = true; p.walkIsland = island;
+        Object.assign(p.pose, { x: island.x + chest.x, y: island.y + chest.y });
+    }
+    assert.equal(world.action('a', { action: 'open_chest' }), true);
+    assert.equal(chest.opened, true);
+    assert.equal(world.action('b', { action: 'open_chest' }), false);
+    assert.equal(a.inventory.every(item => item === null), true);
+    assert.equal(b.inventory.every(item => item === null), true);
+    assert.equal(chest.items.length, 0);
+    world.addPlayer('late');
+    assert.equal(world.snapshot().chests[index][0].opened, true);
+    assert.equal(world.layout[index].chests[0].opened, false, 'Immutable layout keeps the original chest position');
 });
 
 test('sharks choose the nearest living rider and switch when that rider dies', () => {
@@ -193,9 +272,10 @@ test('stale position messages cannot undo a respawn or boarding correction', () 
     world.action('a', { action: 'respawn' });
     const fresh = world.players.get('a');
     world.updatePlayer('a', { ...a.pose, x: 3400 }, 0, 0);
-    assert.equal(fresh.pose.x, 3000);
-    world.updatePlayer('a', { ...fresh.pose, x: 3005 }, fresh.poseRevision, 0);
-    assert.equal(fresh.pose.x, 3005);
+    const spawnX = fresh.pose.x;
+    assert.notEqual(spawnX, 3400);
+    world.updatePlayer('a', { ...fresh.pose, x: spawnX + 5 }, fresh.poseRevision, 0);
+    assert.equal(fresh.pose.x, spawnX + 5);
 });
 
 test('pirate movement cannot cut across a shoreline chord between multiple route waypoints', () => {

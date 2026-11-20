@@ -174,6 +174,21 @@ test('shared-world mode keeps local steering but never advances local enemies, h
     assert.equal(JSON.stringify({ sharks: game.sharks, ship: game.pirateShip, projectiles: game.projectiles }), entities);
 });
 
+test('waiting for host start pauses local steering and the minimap scales other players across the map', () => {
+    const { game, drawCalls } = setup({ room: 'CREW' });
+    game.multiplayer = { ready: true, playing: false, worldTime: 0,
+        minimapPlayers: () => [{ x: 5000, y: 3000 }, { x: 300, y: 500 }] };
+    const x = game.rider.x, time = game.time;
+    game.keys.add('d'); game.step(1);
+    assert.equal(game.rider.x, x);
+    assert.equal(game.time, time);
+    game.drawMinimap();
+    const dots = drawCalls.filter(call => call.method === 'arc' && call.fillStyle === '#8fffd3');
+    assert.equal(dots.length, 2);
+    assert.deepEqual(dots[0].args.slice(0, 2), [200, 120]);
+    assert.deepEqual(dots[1].args.slice(0, 2), [12, 20]);
+});
+
 test('invalid or blocked browser storage cannot break survival timing', () => {
     for (const saved of ['not-a-number', '-10', 'Infinity']) {
         const fixture = setup({ storage: new Map([['ocean-rush-best-survival', saved]]) });
@@ -432,7 +447,7 @@ test('shark states render with finite coordinates and balanced canvas transforms
         const html = fs.readFileSync(path.join(__dirname, '../public', file), 'utf8');
         for (const id of Object.keys(fixture.elements)) assert.ok(html.includes('id="' + id + '"'), id);
         assert.equal((html.match(/clarity\.ms\/tag\//g) || []).length, 1);
-        assert.ok(html.includes('game.js?v=shared-world-35'));
+        assert.ok(html.includes('game.js?v=chest-distribution-38'));
         assert.ok(!html.includes('sharkStatus'));
         assert.ok(html.includes('<h2>You were caught!</h2><p id="deathCause">Shark Attack</p>'));
     }
@@ -1354,6 +1369,76 @@ function shoreSetup() {
     game.updateCamera(); game.updatePickupPrompt();
     return fixture;
 }
+
+test('treasure chests generate on walkable island ground, contain no items, and reset closed', () => {
+    const { game } = setup({ islands: true });
+    const populated = game.islands.filter(island => island.chests.length === 1);
+    assert.equal(populated.length, 5);
+    assert.equal(game.islands.filter(island => island.chests.length === 0).length, 9);
+    assert.equal(new Set(populated.map(island => island.chests[0].id)).size, 5);
+    for (const island of populated) {
+        const chest = island.chests[0];
+        assert.equal(game.canWalkAt(island.x + chest.x, island.y + chest.y, island), true);
+        assert.equal(chest.opened, false);
+        assert.equal(chest.items.length, 0);
+    }
+    populated[0].chests[0].opened = true;
+    game.reset();
+    assert.equal(game.islands.filter(island => island.chests.length === 1).length, 5);
+    assert.equal(game.islands.flatMap(island => island.chests).every(chest => chest.opened === false), true);
+});
+
+test('Q opens a nearby chest on foot, shows an empty interior, and grants no loot', () => {
+    const fixture = shoreSetup();
+    const { game, elements } = fixture;
+    const chest = { id: 'test-chest', x: -40, y: 0, opened: false, items: [] };
+    game.islands[0].chests = [chest];
+    fixture.key('e'); fixture.key('e', false);
+    assert.match(elements.pickupPrompt.textContent, /Q · OPEN CHEST/);
+    fixture.key('q');
+    assert.equal(chest.opened, true);
+    assert.equal(game.inventory.every(item => item === null), true);
+    assert.equal(game.boosting, false);
+    assert.equal(chest.items.length, 0);
+    assert.equal(game.openChest(), false);
+    assert.equal(elements.pickupPrompt.textContent.includes('OPEN CHEST'), false);
+    game.draw();
+    assert.equal(fixture.drawDepth(), 0);
+    assert.ok(fixture.drawCalls.some(call => call.method === 'fillRect' && call.fillStyle === '#261c2c'));
+});
+
+test('chests require island proximity and a living player; Q still boosts on water', () => {
+    const fixture = shoreSetup();
+    const { game } = fixture;
+    const chest = { id: 'distant-chest', x: 20, y: 0, opened: false, items: [] };
+    game.islands[0].chests = [chest];
+    fixture.key('q'); fixture.key('q', false);
+    assert.equal(game.boosting, true);
+    assert.equal(chest.opened, false);
+    fixture.key('e'); fixture.key('e', false);
+    fixture.key('q'); fixture.key('q', false);
+    assert.equal(chest.opened, false);
+    game.rider.x = 3220; game.gameOver = true;
+    assert.equal(game.openChest(), false);
+    game.gameOver = false;
+    assert.equal(game.openChest(), true);
+});
+
+test('touch Q opens chests and multiplayer opening requests wait for the server', () => {
+    const fixture = shoreSetup();
+    const { game, buttons } = fixture;
+    const chest = { id: 'touch-chest', x: -40, y: 0, opened: false, items: [] };
+    game.islands[0].chests = [chest];
+    fixture.key('e'); fixture.key('e', false);
+    buttons['fullscreen-boostButton:pointerdown']({ pointerId: 1, preventDefault() {} });
+    assert.equal(chest.opened, true);
+    chest.opened = false;
+    const actions = [];
+    game.multiplayer = { playing: true, action(name) { actions.push(name); return true; } };
+    assert.equal(game.openChest(), true);
+    assert.equal(actions[0], 'open_chest');
+    assert.equal(chest.opened, false);
+});
 
 function coconutSetup() {
     const fixture = shoreSetup();

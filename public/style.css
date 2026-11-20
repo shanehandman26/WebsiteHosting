@@ -124,6 +124,15 @@ button:focus-visible { outline: 2px solid #ff5acb; outline-offset: 4px; }
 .room-code strong { display: block; color: #8fffd3; font: bold 22px monospace; letter-spacing: 2px; }
 .room-feedback { color: #ffc59f; text-align: center; }
 .room-lobby-link { display: block; text-align: center; margin: 16px 0; }
+.room-waiting { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; padding: 20px; background: #120c2bf0; text-align: center; overflow-y: auto; }
+.room-waiting[hidden] { display: none; }
+.room-waiting > div { width: 100%; max-width: 480px; margin: auto; padding: 24px 0 64px; }
+.room-waiting h2 { margin: 12px 0; color: #8ff5ff; font-size: clamp(22px, 4vw, 34px); }
+.room-waiting p { color: #d4bfe7; line-height: 1.5; }
+#startGameButton { margin-top: 12px; background: #8fffd3; color: #120c2b; font-weight: bold; padding: 14px 28px; }
+#startGameButton[hidden] { display: none; }
+#startGameButton:disabled { opacity: 0.6; cursor: wait; }
+.minimap-legend { margin: 5px 0 0; font-size: 10px; color: #d4bfe7; text-align: center; }
 @media (max-width: 600px) {
     .room-code { left: 8px; bottom: 8px; padding: 5px; }
     .room-code strong { font-size: 14px; letter-spacing: 1px; }

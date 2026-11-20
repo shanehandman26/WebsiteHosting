@@ -4,6 +4,9 @@ class OceanMultiplayer {
         this.game = game;
         this.peers = new Map();
         this.ready = false;
+        this.playing = false;
+        this.hostId = null;
+        this.starting = false;
         this.worldTime = 0;
         this.worldSamples = [];
         this.poseRevision = -1;
@@ -16,6 +19,12 @@ class OceanMultiplayer {
         this.roomCodeHud = document.getElementById('roomCodeHud');
         this.roomCode = document.getElementById('roomCode');
         this.feedback = document.getElementById('roomFeedback');
+        this.waitingPanel = document.getElementById('roomWaiting');
+        this.startButton = document.getElementById('startGameButton');
+        this.startButton.addEventListener('click', () => {
+            if (this.id !== this.hostId || this.playing || !this.ready || this.starting) return;
+            if (this.action('start')) { this.starting = true; this.syncLobby(); }
+        });
         document.getElementById('roomLobbyLink').hidden = false;
         this.retry = 500;
         this.closed = false;
@@ -71,7 +80,7 @@ class OceanMultiplayer {
                 url.searchParams.set('room', code); url.searchParams.delete('action');
                 window.history?.replaceState(null, '', url.href);
                 this.id = msg.id;
-                if (msg.protocol !== 2 || !msg.world || !msg.layout || !msg.you) {
+                if (msg.protocol !== 3 || !msg.world || !msg.layout || !msg.you) {
                     this.failRoom('This room needs the shared-world server update. Refresh after the update.');
                     return;
                 }
@@ -85,6 +94,7 @@ class OceanMultiplayer {
                 this.ready = true;
                 this.tick();
                 for (const p of msg.players) this.receive(p.id, p.state, now);
+                this.syncLobby();
             } else if (msg.type === 'room_error') {
                 this.failRoom(msg.message || 'Unable to join this room.');
                 return;
@@ -94,6 +104,7 @@ class OceanMultiplayer {
                 const present = new Set(msg.players.map(p => p.id));
                 for (const id of this.peers.keys()) if (!present.has(id)) this.peers.delete(id);
                 for (const p of msg.players) this.receive(p.id, p.state, now);
+                this.syncLobby();
             } else if (msg.type === 'personal') {
                 this.applyPersonal(msg.you, true);
             } else if (msg.type === 'state') this.receive(msg.id, msg.state, now);
@@ -107,7 +118,8 @@ class OceanMultiplayer {
         socket.addEventListener('error', () => socket.close());
         socket.addEventListener('close', () => {
             clearTimeout(timeout);
-            this.peers.clear(); this.rtt = null; this.ready = false; this.worldSamples = [];
+            this.peers.clear(); this.rtt = null; this.ready = false; this.playing = false; this.starting = false; this.worldSamples = [];
+            this.syncLobby();
             if (this.closed) return;
             this.status.textContent = 'OFFLINE · RETRYING';
             if (!this.closed) {
@@ -124,6 +136,7 @@ class OceanMultiplayer {
         this.status.textContent = 'ROOM UNAVAILABLE';
         this.feedback.textContent = message;
         this.feedback.hidden = false;
+        this.waitingPanel.hidden = true;
         this.socket?.close();
     }
 
@@ -137,9 +150,11 @@ class OceanMultiplayer {
         const now = performance.now();
         if (now - this.lastPong > 12000) { this.socket.close(); return; }
         const g = this.game;
-        const aimAngle = g.onPirateShip ? g.pirateCannonPose(true).angle : (g.aimAngle?.() ?? g.rider.angle - Math.PI / 2);
-        this.send({ type: 'state', revision: this.poseRevision, slot: g.selectedSlot, controls: { ...this.controls, aimAngle }, state: { ...g.rider, onFoot: g.onFoot,
-            onPirateShip: g.onPirateShip, boosting: g.boosting, dead: g.gameOver } });
+        if (this.playing) {
+            const aimAngle = g.onPirateShip ? g.pirateCannonPose(true).angle : (g.aimAngle?.() ?? g.rider.angle - Math.PI / 2);
+            this.send({ type: 'state', revision: this.poseRevision, slot: g.selectedSlot, controls: { ...this.controls, aimAngle }, state: { ...g.rider, onFoot: g.onFoot,
+                onPirateShip: g.onPirateShip, boosting: g.boosting, dead: g.gameOver } });
+        }
         if (now >= this.nextPing) {
             this.send({ type: 'ping', at: now });
             this.nextPing = now + 2000;
@@ -148,6 +163,7 @@ class OceanMultiplayer {
 
     action(action, values = {}) {
         if (!this.ready || this.socket?.readyState !== WebSocket.OPEN) return false;
+        if (action !== 'start' && !this.playing) return false;
         this.tick();
         this.send({ type: 'action', action, slot: this.game.selectedSlot, ...values });
         return true;
@@ -157,7 +173,7 @@ class OceanMultiplayer {
 
     fire() {
         const g = this.game, gun = g.inventory[g.selectedSlot];
-        if (!this.ready || g.gameOver || !gun || gun.type === 'coconut' || g.time < g.nextShotAt ||
+        if (!this.ready || !this.playing || g.gameOver || !gun || gun.type === 'coconut' || g.time < g.nextShotAt ||
             (gun.type !== 'cannon' && gun.durability <= 0)) return false;
         const cannon = gun.type === 'cannon';
         const angle = cannon ? g.pirateCannonPose(true).angle : g.aimAngle();
@@ -199,6 +215,10 @@ class OceanMultiplayer {
 
     receiveWorld(world, now) {
         const g = this.game;
+        const wasPlaying = this.playing;
+        this.playing = world.phase === 'running';
+        this.hostId = world.hostId;
+        if (this.playing !== wasPlaying) { this.worldSamples = []; this.starting = false; }
         this.worldTime = world.time;
         this.pilotId = world.pilotId;
         this.worldSamples.push({ ...world, at: now });
@@ -207,6 +227,10 @@ class OceanMultiplayer {
         for (let i = 0; i < g.islands.length; i++) {
             const remaining = new Set(world.coconuts[i]);
             g.islands[i].coconuts = this.layout[i].coconuts.filter(c => remaining.has(c.id));
+            const chests = new Map((world.chests?.[i] || []).map(chest => [chest.id, chest.opened]));
+            g.islands[i].chests = (this.layout[i].chests || []).map(chest => ({
+                ...chest, opened: chests.get(chest.id) ?? chest.opened
+            }));
         }
         g.blood = world.blood;
         if (this.worldSamples.length === 1) {
@@ -248,6 +272,25 @@ class OceanMultiplayer {
 
     updateStatus() {
         this.status.textContent = `${this.peers.size + 1} RIDERS · ${this.rtt === null ? '…' : this.rtt + ' MS RTT'} · ${this.room.toUpperCase()}`;
+    }
+
+    syncLobby() {
+        this.waitingPanel.hidden = !this.ready || this.playing;
+        this.startButton.hidden = this.id !== this.hostId;
+        this.startButton.disabled = !this.ready || this.starting;
+        this.startButton.textContent = this.starting ? 'Starting…' : 'Start Game';
+        const count = document.getElementById('waitingPlayers');
+        const text = `${this.peers.size + 1} ${(this.peers.size + 1) === 1 ? 'rider' : 'riders'} connected`;
+        if (count.textContent !== text) count.textContent = text;
+        document.getElementById('waitingMessage').textContent = this.id === this.hostId ?
+            'Start when everyone has joined. Players will spawn across the ocean.' : 'Waiting for the host to start the game.';
+        document.getElementById('minimapLegend').hidden = !this.playing;
+    }
+
+    minimapPlayers() {
+        const now = performance.now();
+        return [...this.peers].filter(([, peer]) => !peer.state.dead)
+            .map(([id, peer]) => ({ id, ...this.position(peer, now) }));
     }
 
     receive(id, state, now) {

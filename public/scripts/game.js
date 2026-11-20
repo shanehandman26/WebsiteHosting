@@ -159,7 +159,7 @@ class Game {
             this.syncFullscreen();
             return;
         }
-        if (this.gameOver) return;
+        if (this.gameOver || this.multiplayer?.playing === false) return;
         const key = /^Key[WASDQE]$/.test(event.code) ? event.code.slice(3).toLowerCase() :
             /^(Digit|Numpad)[1-6]$/.test(event.code) ? event.code.slice(-1) : event.key.toLowerCase();
         if (!['w', 'a', 's', 'd', 'q', 'e', '1', '2', '3', '4', '5', '6'].includes(key)) return;
@@ -176,7 +176,7 @@ class Game {
         const freshPress = pressed && !this.keys.has(key);
         if (pressed) this.keys.add(key);
         else this.keys.delete(key);
-        if (key === 'q' && freshPress) this.beginBoost();
+        if (key === 'q' && freshPress && !event.repeat) this.useQ();
         if (key === 'e' && freshPress && !event.repeat) this.interact();
     }
 
@@ -269,7 +269,42 @@ class Game {
         return true;
     }
 
+    nearbyChest() {
+        if (!this.onFoot || !this.walkIsland || !this.canWalkAt(this.rider.x, this.rider.y)) return null;
+        let closest = null, distance = 58;
+        for (const chest of this.walkIsland.chests || []) {
+            if (chest.opened) continue;
+            const separation = Math.hypot(this.walkIsland.x + chest.x - this.rider.x,
+                this.walkIsland.y + chest.y - this.rider.y);
+            if (separation <= distance) { closest = chest; distance = separation; }
+        }
+        return closest;
+    }
+
+    openChest() {
+        if (this.gameOver) return false;
+        if (this.multiplayer) return this.multiplayer.action('open_chest');
+        const chest = this.nearbyChest();
+        if (!chest) return false;
+        chest.opened = true;
+        this.updatePickupPrompt();
+        return true;
+    }
+
+    useQ() {
+        if (this.onFoot) return this.openChest();
+        this.beginBoost();
+    }
+
     updatePickupPrompt() {
+        this.updateItemPickupPrompt();
+        if (this.gameOver || !this.nearbyChest()) return;
+        this.pickupPrompt.textContent = this.pickupPrompt.hidden ? 'Q · OPEN CHEST' :
+            this.pickupPrompt.textContent + ' | Q · OPEN CHEST';
+        this.pickupPrompt.hidden = false;
+    }
+
+    updateItemPickupPrompt() {
         if (this.gameOver) { this.pickupPrompt.hidden = true; return; }
         if (this.inventory[this.selectedSlot]?.type === 'coconut') {
             this.pickupPrompt.hidden = false;
@@ -613,7 +648,7 @@ class Game {
             event.preventDefault();
             button.setPointerCapture(event.pointerId);
             this.touchDirections.add(direction);
-            if (direction === 'q') this.beginBoost();
+            if (direction === 'q') this.useQ();
         });
         for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
             button.addEventListener(event, () => this.touchDirections.delete(direction));
@@ -1037,7 +1072,20 @@ class Game {
                 return { x: px * Math.cos(rotation) - py * Math.sin(rotation),
                     y: px * Math.sin(rotation) + py * Math.cos(rotation), angle };
             });
-            islands.push({ x, y, radius, points, palms, coconuts: [] });
+            islands.push({ x, y, radius, points, palms, coconuts: [], chests: [] });
+        }
+        const chestIslands = islands.map((island, index) => ({ island, index }));
+        for (let i = chestIslands.length - 1; i > 0; i--) {
+            const other = Math.floor(Math.random() * (i + 1));
+            [chestIslands[i], chestIslands[other]] = [chestIslands[other], chestIslands[i]];
+        }
+        for (const { island, index } of chestIslands.slice(0, Math.round(islands.length / 3))) {
+            const angle = Math.random() * Math.PI * 2;
+            let x = Math.cos(angle) * island.radius * 0.4, y = Math.sin(angle) * island.radius * 0.4;
+            for (let attempt = 0; attempt < 12 && !this.canWalkAt(island.x + x, island.y + y, island); attempt++) {
+                x *= 0.65; y *= 0.65;
+            }
+            island.chests = [{ id: 'chest-' + index, x, y, opened: false, items: [] }];
         }
         const coconutIslands = islands.map((island, index) => ({ island, index }));
         for (let i = coconutIslands.length - 1; i > 0; i--) {
@@ -1169,7 +1217,31 @@ class Game {
                 for (const [cx, cy] of [[1, -5], [6, -3], [9, -7]]) this.ellipse(cx, cy, 2.7, 2.5, '#713b67');
                 ctx.restore();
             }
+            for (const chest of island.chests || []) this.drawChest(island.x + chest.x, island.y + chest.y, chest.opened);
         }
+    }
+
+    drawChest(x, y, opened) {
+        const ctx = this.ctx;
+        ctx.save(); ctx.translate(x, y);
+        this.ellipse(0, 12, 20, 7, 'rgba(38, 14, 53, 0.4)');
+        ctx.fillStyle = '#85442f'; ctx.fillRect(-16, -4, 32, 20);
+        ctx.strokeStyle = '#ffd17b'; ctx.lineWidth = 2;
+        ctx.strokeRect(-16, -4, 32, 20);
+        ctx.fillStyle = '#efb65b'; ctx.fillRect(-11, -4, 3, 20); ctx.fillRect(8, -4, 3, 20);
+        if (opened) {
+            this.sharkShape([[-16, -10], [-13, -23], [16, -23], [16, -10]], '#9e5b36');
+            ctx.beginPath(); ctx.moveTo(-16, -10); ctx.lineTo(-13, -23); ctx.lineTo(16, -23); ctx.lineTo(16, -10); ctx.closePath(); ctx.stroke();
+            ctx.fillStyle = '#261c2c'; ctx.fillRect(-13, -7, 26, 9);
+            ctx.strokeRect(-15, -9, 30, 13);
+        } else {
+            ctx.fillStyle = '#aa6940';
+            ctx.beginPath(); ctx.moveTo(-16, -4); ctx.quadraticCurveTo(-16, -18, 0, -18);
+            ctx.quadraticCurveTo(16, -18, 16, -4); ctx.closePath(); ctx.fill(); ctx.stroke();
+            ctx.fillStyle = '#ffd17b'; ctx.fillRect(-3, -6, 6, 10);
+            ctx.fillStyle = '#55302d'; ctx.fillRect(-1, -2, 2, 3);
+        }
+        ctx.restore();
     }
 
     createFish() {
@@ -1764,7 +1836,7 @@ class Game {
     }
 
     step(dt) {
-        if (this.multiplayer && !this.multiplayer.ready) return;
+        if (this.multiplayer && (!this.multiplayer.ready || this.multiplayer.playing === false)) return;
         this.time += dt;
         if (this.muzzleFlash && this.time >= this.muzzleFlash.startedAt + this.muzzleFlash.duration) this.muzzleFlash = null;
         for (const pool of this.blood) pool.life = Math.max(0, pool.life - dt);
@@ -2031,6 +2103,10 @@ class Game {
         ctx.save(); ctx.translate(ship.x * sx, ship.y * sy); ctx.rotate(ship.angle);
         ctx.fillStyle = ship.disarmed ? '#ffd684' : '#ff8a63';
         ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -3); ctx.lineTo(-4, 3); ctx.closePath(); ctx.fill(); ctx.restore();
+        for (const player of this.multiplayer?.minimapPlayers?.() || []) {
+            ctx.fillStyle = '#8fffd3'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(player.x * sx, player.y * sy, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        }
         ctx.translate(this.rider.x * sx, this.rider.y * sy); ctx.rotate(this.rider.angle);
         ctx.fillStyle = '#8ff5ff'; ctx.strokeStyle = '#0b1730'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 5); ctx.lineTo(0, 3); ctx.lineTo(-4, 5); ctx.closePath(); ctx.fill(); ctx.stroke();

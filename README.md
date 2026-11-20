@@ -245,6 +245,25 @@ After joining, the game URL also contains the code and can be shared directly.
 An empty hosted room remains available for 60 seconds to allow reconnecting.
 Singleplayer does not open a relay connection.
 
+
+Rooms open in a **waiting lobby**. Only the current host sees **Start Game**;
+the server rejects start requests from other players. Movement, pickups,
+combat, enemies, and the safe-area timer stay paused until the host starts.
+If the host leaves, the next connected player becomes host. Starting twice
+does not restart the match.
+
+At the start, all connected players receive separate open-water spawns spread
+across the map. Spawn selection checks island clearance, enemy proximity, and
+distance from other players, and keeps spawns inside the final safe area.
+Late joiners enter the running match at another separated location; individual
+respawns also use safe separated positions. The room code stays visible while
+waiting and during gameplay, including in fullscreen.
+
+The minimap shows your cyan direction marker and **green dots for other living
+players**, even when they are far outside your view. Dead or disconnected riders
+are removed; respawned riders appear again. These positions use the same
+smoothed player updates as the ocean view.
+
 Shared rooms require the updated public files, `server/relay.cjs`, and
 `server/room-world.cjs`.
 Restart the relay after updating the server; publishing Firebase Hosting alone
